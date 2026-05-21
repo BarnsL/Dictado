@@ -1,0 +1,16 @@
+# Core runtime dependencies. All are pure-Python or have prebuilt wheels for
+# Windows / macOS / Linux on Python 3.10-3.13.
+#
+# We intentionally do NOT depend on the `keyboard` library; on Windows that
+# package installs a global low-level keyboard hook which endpoint protection
+# products (CrowdStrike Falcon, SentinelOne, ...) flag as a keylogger.
+openai-whisper>=20240930   # the actual ASR model + tokenizer
+pyaudio>=0.2.14            # cross-platform mic capture
+pyperclip>=1.9.0           # cross-platform clipboard write
+pystray>=0.19.5            # cross-platform system-tray icon
+Pillow>=10.0.0             # icon drawing (pystray needs PIL.Image)
+numpy>=1.24                # whisper input shaping (pulled in by whisper too)
+
+# Optional: only needed for global hotkeys on Linux X11 / macOS.
+# On Windows we use the OS RegisterHotKey API directly, no pynput required.
+pynput>=1.7.6 ; sys_platform != "win32"

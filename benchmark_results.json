@@ -1,0 +1,51 @@
+{
+  "generated": "2026-05-21T09:47:03",
+  "environment": {
+    "os": "Windows-11",
+    "python": "3.13.2",
+    "cpu": "x86-64, 12 cores",
+    "ram_gb": 32,
+    "torch": "2.12.0+cpu",
+    "cuda": false,
+    "device": "cpu"
+  },
+  "audio": { "path": "samples/jfk.flac", "duration_s": 11.0 },
+  "results": [
+    {
+      "model": "tiny",
+      "load_time_s": 6.214,
+      "warmup_time_s": 0.925,
+      "transcribe_time_s": 0.661,
+      "transcribe_runs":   [0.66, 0.71, 0.65],
+      "realtime_factor": 16.6,
+      "text": "And so my fellow Americans ask not what your country can do for you ask what you can do for your country."
+    },
+    {
+      "model": "base",
+      "load_time_s": 0.661,
+      "warmup_time_s": 1.357,
+      "transcribe_time_s": 1.372,
+      "transcribe_runs":   [1.27, 1.37, 1.65],
+      "realtime_factor": 8.0,
+      "text": "And so my fellow Americans ask not what your country can do for you, ask what you can do for your country."
+    },
+    {
+      "model": "small",
+      "load_time_s": 2.695,
+      "warmup_time_s": 3.205,
+      "transcribe_time_s": 3.011,
+      "transcribe_runs":   [3.77, 2.92, 3.01],
+      "realtime_factor": 3.65,
+      "text": "And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country."
+    },
+    {
+      "model": "medium",
+      "load_time_s": 6.928,
+      "warmup_time_s": 10.282,
+      "transcribe_time_s": 9.409,
+      "transcribe_runs":   [9.53, 8.38, 9.41],
+      "realtime_factor": 1.17,
+      "text": "And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country."
+    }
+  ]
+}

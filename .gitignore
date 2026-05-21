@@ -1,0 +1,70 @@
+# --------------------------------------------------------------------------
+# Personal data and runtime state
+# --------------------------------------------------------------------------
+# The daemon archives every recording (WAV + a rolling Markdown transcript
+# log) under the user's "Sound Recordings" folder. Those files contain the
+# user's actual voice; they MUST NEVER be committed.
+Sound Recordings/
+*Sound Recordings*/
+AudioTranscriptions_*.md
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.opus
+
+# Local daemon state
+.dictado/
+dictado-state/
+daemon.log
+daemon.log.*
+config.json
+control.port
+trigger/
+crashes/
+
+# Whisper model cache (huge; user installs)
+.cache/
+~/.cache/whisper/
+
+# --------------------------------------------------------------------------
+# Build / packaging artifacts
+# --------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# venv directories
+venv/
+.venv/
+env/
+.env
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --------------------------------------------------------------------------
+# Benchmark outputs
+# --------------------------------------------------------------------------
+# benchmark_results.json is committed (it's the published numbers); the raw
+# audio under samples/ is NOT — keep only the public-domain JFK clip.
+benchmark_results.local.json
+samples/personal/
+
+# Allow the public-domain JFK sample used by benchmark.py.
+!samples/jfk.flac
+!samples/README.md

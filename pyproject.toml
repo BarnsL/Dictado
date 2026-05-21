@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name        = "dictado"
+version = "0.3.0"
+description = "Local push-to-talk voice-to-text daemon. Cross-platform. No cloud."
+readme      = "README.md"
+license     = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors     = [{ name = "dictado contributors" }]
+keywords    = [
+  "whisper", "speech-to-text", "voice-to-text", "dictation",
+  "tray", "hotkey", "local", "offline",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: No Input/Output (Daemon)",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio :: Capture/Recording",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+  "openai-whisper>=20240930",
+  "pyaudio>=0.2.14",
+  "pyperclip>=1.9.0",
+  "pystray>=0.19.5",
+  "Pillow>=10.0.0",
+  "numpy>=1.24",
+  'pynput>=1.7.6; sys_platform != "win32"',
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7",
+  "ruff>=0.4",
+]
+
+[project.scripts]
+dictado = "dictado.daemon:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dictado*"]
