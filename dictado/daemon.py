@@ -64,6 +64,7 @@ from . import config as _cfg
 from .platform import adapter as _platform_adapter
 from .archive import archive_recording, default_archive_dir
 from . import agent_input as _aim
+from . import models as _models
 
 _plat = _platform_adapter()
 
@@ -84,7 +85,11 @@ STREAM_INTERVAL_SECONDS      = 1.5
 STREAM_WINDOW_SECONDS        = 8.0
 STREAM_MIN_NEW_AUDIO_SECONDS = 0.6
 
-SELECTABLE_MODELS = ("base", "small", "medium")
+# Tray-menu model list. Defaults to a five-entry slice of the full catalog
+# (see dictado/models.py). Power users can switch to any other Whisper
+# checkpoint via the IPC trigger: `dictado --switch-model large-v3-turbo`,
+# `dictado --switch-model tiny.en`, etc.
+SELECTABLE_MODELS = _models.DEFAULT_VISIBLE
 TRIGGER_POLL_SECONDS = 0.25
 
 
@@ -648,7 +653,7 @@ def _build_aim_submenu() -> Menu:
     return Menu(*items)
 
 def _build_tray_menu() -> Menu:
-    model_items = [MenuItem(name.capitalize(),
+    model_items = [MenuItem(_models.display_for(name),
                             _make_model_switcher(name),
                             checked=_is_current_model(name),
                             radio=True)
@@ -717,7 +722,7 @@ def _trigger_loop() -> None:
                 threading.Thread(target=_quit_daemon, daemon=True).start()
             elif name.startswith("switch."):
                 m = name.split(".", 1)[1]
-                if m in SELECTABLE_MODELS or m in ("tiny", "large"):
+                if _models.is_known(m):
                     threading.Thread(target=load_model, args=(m,),
                                      daemon=True).start()
 

@@ -131,8 +131,13 @@ def load() -> dict:
     try:
         with p.open("r", encoding="utf-8") as f:
             on_disk = json.load(f)
-        if on_disk.get("model") in ("tiny", "base", "small", "medium", "large"):
-            cfg["model"] = on_disk["model"]
+        m = on_disk.get("model")
+        if isinstance(m, str):
+            # Accept any name the model catalog recognises (or any alias).
+            # We import lazily to avoid a circular dependency at module load.
+            from . import models as _models
+            if _models.is_known(m):
+                cfg["model"] = m
         if isinstance(on_disk.get("autopaste"), bool):
             cfg["autopaste"] = on_disk["autopaste"]
         if isinstance(on_disk.get("popup"), bool):

@@ -4,6 +4,32 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.5.0] — 2026-05
+
+The "every Whisper model" release.
+
+### New
+
+- **Full Whisper catalog.** A new `dictado.models` module enumerates
+  every checkpoint upstream `openai-whisper` accepts —
+  `tiny.en` / `tiny` / `base.en` / `base` / `small.en` / `small` /
+  `medium.en` / `medium` / `large-v1` / `large-v2` / `large-v3` /
+  `large-v3-turbo`. The `large` and `turbo` aliases are recognised
+  but de-duplicated from menus so the same checkpoint never shows up
+  twice. Each catalog row carries a display label, parameter count,
+  on-disk size, RAM cost, and a multilingual flag.
+
+- **`docs/MODELS.md`** — full table, picking guide by hardware,
+  switching mechanics, and download sizes.
+
+### Changed
+
+- Tray menu defaults to a 5-entry slice (`base`, `small`, `medium`,
+  `large-v3-turbo`, `large-v3`). The CLI trigger
+  `dictado --switch-model NAME` accepts any name in the catalog.
+- `config.py` model validation defers to `dictado.models.is_known()`
+  so the persisted `model` key can be anything in the catalog.
+
 ## [0.4.0] — 2026-05
 
 The "press Enter for me" release.

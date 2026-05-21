@@ -153,6 +153,34 @@ red (recording), yellow (transcribing).
 
 ---
 
+## Models
+
+Dictado loads any model the upstream `openai-whisper` package
+accepts — tiny / base / small / medium plus the `*.en` English-only
+variants, plus large-v1, large-v2, large-v3, and large-v3-turbo.
+See **[docs/MODELS.md](docs/MODELS.md)** for the full table and a
+picking guide.
+
+The five surfaced in the tray menu by default:
+
+| Tray label      | Model name        | Disk    | CPU RAM | Notes                                                  |
+|-----------------|-------------------|--------:|--------:|--------------------------------------------------------|
+| Base            | `base`            | 140 MB  | 0.5 GB  | Best for live partials on a slow CPU                   |
+| Small           | `small`           | 460 MB  | 1.0 GB  | Sweet spot accuracy / speed on a laptop CPU            |
+| Medium          | `medium`          | 1.5 GB  | 1.5 GB  | High-accuracy multilingual; default on first launch    |
+| Large v3 Turbo  | `large-v3-turbo`  | 1.5 GB  | 1.5 GB  | ~5× faster than `large-v3` on CPU                      |
+| Large v3        | `large-v3`        | 2.9 GB  | 3.0 GB  | Highest accuracy; sub-realtime on CPU                  |
+
+Need an English-only or older-large variant? They are loadable from
+the CLI:
+
+```bash
+dictado --switch-model medium.en
+dictado --switch-model large-v2
+```
+
+---
+
 ## Performance
 
 `benchmark.py` runs every model **sequentially** (only one in RAM at a
