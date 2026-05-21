@@ -63,6 +63,7 @@ from pystray import Icon, Menu, MenuItem
 from . import config as _cfg
 from .platform import adapter as _platform_adapter
 from .archive import archive_recording, default_archive_dir
+from . import agent_input as _aim
 
 _plat = _platform_adapter()
 
@@ -124,6 +125,7 @@ _stream_stop = threading.Event()
 _last_partial_frame_count = 0
 hotkey_handle = None  # platform HotkeyHandle; lets us rebind live
 current_hotkey_spec = "alt+t"
+agent_input_mode = "off"  # 'off' | 'auto' | <app id from agent_input.APP_PROFILES>
 
 
 # ─── Model loading ────────────────────────────────────────────────────────────
@@ -456,14 +458,41 @@ def stop_recording() -> None:
         if text:
             try: pyperclip.copy(text)
             except Exception: logger.exception("Clipboard copy failed.")
-            logger.info("Transcribed (%d chars). autopaste=%s",
-                        len(text), autopaste_enabled)
+            logger.info("Transcribed (%d chars). autopaste=%s aim=%s",
+                        len(text), autopaste_enabled, agent_input_mode)
             _popup("final", text); _popup("status", "Ready")
-            if autopaste_enabled and foreground_token:
+
+            # Agent Input Mode (AIM): if a target app is configured,
+            # raise its window to the foreground first, then paste, then Enter.
+            # If AIM is 'off', behave like the previous build.
+            # If AIM is 'auto', paste + Enter into whatever is focused.
+            target_hwnd = foreground_token
+            aim = agent_input_mode or 'off'
+            if aim not in ('off', 'auto'):
+                # Specific app target: try to focus it.
+                if _aim.activate(aim):
+                    target_hwnd = 0  # _plat.paste_into_window will skip
+                                     # the SetForegroundWindow step and just
+                                     # send Ctrl+V to whatever is foreground
+                                     # now (the app we just activated).
+                else:
+                    logger.warning("AIM target %r could not be activated; "
+                                   "falling back to 'auto' for this dictation.", aim)
+
+            if (autopaste_enabled or aim != 'off') and (target_hwnd or aim != 'off'):
                 try:
-                    _plat.paste_into_window(foreground_token)
+                    _plat.paste_into_window(target_hwnd)
                 except Exception:
                     logger.exception("Auto-paste failed; text on clipboard.")
+
+            if aim != 'off':
+                # AIM always finishes with Enter so the message/prompt sends.
+                # Tiny delay so the paste lands before Enter fires.
+                time.sleep(0.05)
+                try:
+                    _aim.send_enter()
+                except Exception:
+                    logger.exception("AIM send_enter failed.")
         else:
             _popup("final", "(no speech detected)"); _popup("status", "Ready")
             logger.info("No speech detected.")
@@ -577,6 +606,47 @@ def _prompt_custom_hotkey(icon_ref, item) -> None:
                 logger.warning('custom hotkey %r was rejected', spec)
     threading.Thread(target=_run, daemon=True).start()
 
+def _set_agent_input(mode: str) -> None:
+    """Switch the AIM target. mode is 'off', 'auto', or an app id.
+
+    Persisted to config.json. The submenu is rebuilt so the radio
+    indicator follows the new selection without needing a restart."""
+    global agent_input_mode
+    agent_input_mode = mode
+    _cfg.update(agent_input=mode)
+    _update_icon_tooltip()
+    if icon is not None:
+        icon.menu = _build_tray_menu()
+        icon.update_menu()
+    logger.info("agent_input_mode -> %s", mode)
+
+def _make_aim_setter(mode: str):
+    def _click(icon_ref, item):
+        threading.Thread(target=_set_agent_input, args=(mode,),
+                         daemon=True).start()
+    return _click
+
+def _is_aim(mode: str):
+    return lambda item: agent_input_mode == mode
+
+def _build_aim_submenu() -> Menu:
+    """Build the AIM submenu live so newly-launched apps appear without
+    a daemon restart. Menu items: Off (default), Auto (paste+Enter into
+    focused window), then one entry per detected app."""
+    items = [MenuItem('Off',  _make_aim_setter('off'),
+                      checked=_is_aim('off'),  radio=True),
+             MenuItem('Auto (focused window)',
+                      _make_aim_setter('auto'), checked=_is_aim('auto'), radio=True),
+             Menu.SEPARATOR]
+    detected = _aim.detect_apps()
+    if not detected:
+        items.append(MenuItem('No supported apps detected', None, enabled=False))
+    else:
+        for app in detected:
+            items.append(MenuItem(app.label, _make_aim_setter(app.id),
+                                  checked=_is_aim(app.id), radio=True))
+    return Menu(*items)
+
 def _build_tray_menu() -> Menu:
     model_items = [MenuItem(name.capitalize(),
                             _make_model_switcher(name),
@@ -601,6 +671,8 @@ def _build_tray_menu() -> Menu:
                  ),
         MenuItem("Auto-paste after transcription",
                  _toggle_autopaste, checked=_is_autopaste),
+        MenuItem(f'Agent Input Mode  ({_aim.app_label_for(agent_input_mode)})',
+                 _build_aim_submenu()),
         Menu.SEPARATOR,
         MenuItem("Quit", _quit_daemon),
     )
@@ -698,7 +770,9 @@ def main() -> None:
 
     # Daemon mode.
     cfg = _cfg.load()
+    global agent_input_mode
     autopaste_enabled = bool(cfg.get("autopaste", True))
+    agent_input_mode = cfg.get("agent_input", "off") or "off"
     popup_enabled     = bool(cfg.get("popup", True))
     language          = cfg.get("language", "en")
     initial_model     = cfg.get("model", "medium")

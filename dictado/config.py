@@ -33,6 +33,11 @@ DEFAULTS = {
     "popup":     True,         # show the live recording popup window
     "language":  "en",         # whisper language code, or null for auto-detect
     "hotkey":    "alt+t",      # see "Hotkey shape" above
+    # Agent Input Mode. "off" = clipboard + Ctrl+V, no Enter.
+    # "auto" = clipboard + Ctrl+V + Enter into the focused window.
+    # any other string = an app id from dictado.agent_input.APP_PROFILES
+    # which is activated first, then clipboard + Ctrl+V + Enter.
+    "agent_input": "off",
     # archive_dir = None means "use the OS-appropriate default"
     # (~/Documents/Sound Recordings on every platform).
     "archive_dir": None,
@@ -145,6 +150,9 @@ def load() -> dict:
         ad = on_disk.get("archive_dir")
         if ad is None or isinstance(ad, str):
             cfg["archive_dir"] = ad
+        ai = on_disk.get("agent_input")
+        if isinstance(ai, str) and ai:
+            cfg["agent_input"] = ai
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     save(cfg)

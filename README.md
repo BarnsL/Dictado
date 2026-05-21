@@ -31,6 +31,11 @@ your endpoint protection software already trusts (more on that below).
 
 ## At a glance
 
+- **Agent Input Mode** (new in 0.4): turn dictation into one-shot
+  message-sending. Pick a target app from the tray menu and Dictado will
+  activate it, paste, and press Enter for you. Works with ChatGPT, Claude,
+  Cursor, VS Code, Slack, Teams, Discord, Telegram, and more.
+  Full design notes in [docs/AGENT_INPUT_MODE.md](docs/AGENT_INPUT_MODE.md).
 - **Configurable global hotkey.** Default is **Alt + T**. Change it from
   the tray menu without restarting; the choice persists across reboots.
   Five presets ship out of the box and a *Set custom…* dialog accepts
