@@ -232,6 +232,7 @@ if sys.platform == "win32":
         ("chatgpt",   "ChatGPT (desktop)",     _profile_by_image("ChatGPT.exe")),
         ("claude",    "Claude (desktop)",      _profile_by_image("Claude.exe")),
         ("copilot",   "Microsoft Copilot",     _profile_by_image("Copilot.exe", "ai.exe")),
+        ("amazon-quick", "Amazon Quick",          _profile_by_image("Amazon Quick.exe")),
         # IDEs / editors ----------------------------------------------
         ("cursor",    "Cursor",                _profile_by_image("Cursor.exe")),
         ("vscode",    "Visual Studio Code",    _profile_by_image("Code.exe")),
