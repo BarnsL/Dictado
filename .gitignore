@@ -67,4 +67,5 @@ samples/personal/
 
 # Allow the public-domain JFK sample used by benchmark.py.
 !samples/jfk.flac
+!samples/librispeech-1272-128104-0004.flac
 !samples/README.md
