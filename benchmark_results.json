@@ -1,51 +1,87 @@
 {
-  "generated": "2026-05-21T09:47:03",
+  "generated": "2026-05-21T13:30:05",
   "environment": {
-    "os": "Windows-11",
+    "os": "Windows-11-10.0.26200-SP0",
     "python": "3.13.2",
-    "cpu": "x86-64, 12 cores",
-    "ram_gb": 32,
+    "cpu": "AMD64 Family 25 Model 117 Stepping 2, AuthenticAMD",
+    "cores": 12,
+    "ram_gb": 31.3,
     "torch": "2.12.0+cpu",
     "cuda": false,
     "device": "cpu"
   },
-  "audio": { "path": "samples/jfk.flac", "duration_s": 11.0 },
+  "audio": {
+    "path": "samples/librispeech-1272-128104-0004.flac",
+    "duration_s": 29.4,
+    "reference_words": 68,
+    "reference_source": "LibriSpeech dev-clean utterance 1272-128104-0004"
+  },
   "results": [
     {
-      "model": "tiny",
-      "load_time_s": 6.214,
-      "warmup_time_s": 0.925,
-      "transcribe_time_s": 0.661,
-      "transcribe_runs":   [0.66, 0.71, 0.65],
-      "realtime_factor": 16.6,
-      "text": "And so my fellow Americans ask not what your country can do for you ask what you can do for your country."
+      "load_time_s": 11.62,
+      "warmup_time_s": 2.2,
+      "transcribe_time_s": 1.99,
+      "wer": 0.1618,
+      "wer_edits": 11,
+      "wer_ref_words": 68,
+      "model": "tiny.en",
+      "realtime_factor": 14.77,
+      "text": "(see live console transcript)"
     },
     {
-      "model": "base",
-      "load_time_s": 0.661,
-      "warmup_time_s": 1.357,
-      "transcribe_time_s": 1.372,
-      "transcribe_runs":   [1.27, 1.37, 1.65],
-      "realtime_factor": 8.0,
-      "text": "And so my fellow Americans ask not what your country can do for you, ask what you can do for your country."
+      "load_time_s": 17.99,
+      "warmup_time_s": 4.85,
+      "transcribe_time_s": 4.51,
+      "wer": 0.1618,
+      "wer_edits": 11,
+      "wer_ref_words": 68,
+      "model": "base.en",
+      "realtime_factor": 6.52,
+      "text": "(see live console transcript)"
     },
     {
-      "model": "small",
-      "load_time_s": 2.695,
-      "warmup_time_s": 3.205,
-      "transcribe_time_s": 3.011,
-      "transcribe_runs":   [3.77, 2.92, 3.01],
-      "realtime_factor": 3.65,
-      "text": "And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country."
+      "load_time_s": 68.78,
+      "warmup_time_s": 12.3,
+      "transcribe_time_s": 11.88,
+      "wer": 0.1471,
+      "wer_edits": 10,
+      "wer_ref_words": 68,
+      "model": "small.en",
+      "realtime_factor": 2.47,
+      "text": "(see live console transcript)"
     },
     {
+      "load_time_s": 188.307,
+      "warmup_time_s": 25.401,
+      "transcribe_time_s": 23.863,
+      "wer": 0.1324,
+      "wer_edits": 9,
+      "wer_ref_words": 68,
+      "text": "Linnell's pictures are a sort of up-guards-and-atoms paintings, and Mason's exquisite idols are as national as a jingo poem. Mr. Birkett Foster's landscapes smile at one much in the same way that Mr. Carcer used to flash his teeth. And Mr. John Collier gives his sitter a cheerful slap on the back, before he says, like a shampooer in a Turkish bath, Man.",
+      "model": "medium.en",
+      "realtime_factor": 1.23
+    },
+    {
+      "load_time_s": 13.23,
+      "warmup_time_s": 19.2,
+      "transcribe_time_s": 18.0,
+      "wer": 0.1324,
+      "wer_edits": 9,
+      "wer_ref_words": 68,
       "model": "medium",
-      "load_time_s": 6.928,
-      "warmup_time_s": 10.282,
-      "transcribe_time_s": 9.409,
-      "transcribe_runs":   [9.53, 8.38, 9.41],
-      "realtime_factor": 1.17,
-      "text": "And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country."
+      "realtime_factor": 1.63,
+      "text": "(see live console transcript)"
+    },
+    {
+      "load_time_s": 115.85,
+      "warmup_time_s": 13.49,
+      "transcribe_time_s": 12.43,
+      "wer": 0.0882,
+      "wer_edits": 6,
+      "wer_ref_words": 68,
+      "model": "large-v3-turbo",
+      "realtime_factor": 2.37,
+      "text": "(see live console transcript)"
     }
   ]
 }

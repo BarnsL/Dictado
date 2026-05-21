@@ -52,6 +52,43 @@ import wave
 from datetime import datetime
 from pathlib import Path
 
+# Reference-based Word Error Rate is optional; pass --reference path/to/text.
+# Both reference and hypothesis go through this normalizer before alignment so
+# the upstream LibriSpeech all-caps reference compares fairly to whisper's
+# mixed-case + punctuated output.
+import re
+_WER_NORM_RE = re.compile(r"[^a-z0-9']+")
+def normalise_for_wer(text: str) -> list[str]:
+    """Lowercase, drop everything that isn't a letter / digit / apostrophe,
+    collapse whitespace, return a list of tokens. Same convention used by
+    OpenAI's own whisper test suite."""
+    tokens = _WER_NORM_RE.sub(" ", text.lower()).split()
+    return tokens
+
+def word_error_rate(reference: str, hypothesis: str) -> tuple[float, int, int]:
+    """Return (wer_fraction, edits, ref_word_count). Implements the standard
+    Levenshtein-based WER: edits / max(1, ref_word_count). Pure Python; no
+    external dependency."""
+    r = normalise_for_wer(reference)
+    h = normalise_for_wer(hypothesis)
+    if not r:
+        return (0.0 if not h else 1.0, len(h), 0)
+    # DP table over reference x hypothesis. We only need the previous and
+    # current rows -- a full matrix would be wasteful for long utterances.
+    prev = list(range(len(h) + 1))
+    for i, rword in enumerate(r, 1):
+        curr = [i] + [0] * len(h)
+        for j, hword in enumerate(h, 1):
+            cost = 0 if rword == hword else 1
+            curr[j] = min(
+                prev[j] + 1,            # deletion
+                curr[j - 1] + 1,        # insertion
+                prev[j - 1] + cost,     # substitution / match
+            )
+        prev = curr
+    edits = prev[-1]
+    return (edits / float(len(r)), edits, len(r))
+
 # All defaults are conservative for a typical laptop. Override with --models.
 DEFAULT_MODELS = ["tiny", "base", "small", "medium"]
 DEFAULT_RUNS_PER_MODEL = 3   # one warm-up + this many timed runs
@@ -122,7 +159,7 @@ def audio_duration_seconds(path: Path) -> float:
         return 0.0
 
 
-def benchmark_one(model_name: str, audio_path: Path, runs: int):
+def benchmark_one(model_name: str, audio_path: Path, runs: int, reference_text: str | None = None):
     """Load model_name, run `runs+1` transcriptions (1 warmup + `runs` timed),
     return a dict of measurements. Frees the model afterward."""
     import whisper
@@ -179,7 +216,7 @@ def benchmark_one(model_name: str, audio_path: Path, runs: int):
     except ImportError:
         pass
 
-    return {
+    out = {
         "model":              model_name,
         "load_time_s":        round(load_time, 3),
         "warmup_time_s":      round(warmup_time, 3),
@@ -188,7 +225,18 @@ def benchmark_one(model_name: str, audio_path: Path, runs: int):
         "transcribe_runs":    [round(t, 3) for t in timings],
         "realtime_factor":    round(realtime, 2) if realtime else None,
         "text":               text,
+        "wer":                None,
+        "wer_edits":          None,
+        "wer_ref_words":      None,
     }
+    if reference_text:
+        wer_frac, edits, ref_words = word_error_rate(reference_text, text)
+        out["wer"]            = round(wer_frac, 4)
+        out["wer_edits"]      = edits
+        out["wer_ref_words"]  = ref_words
+        print(f"  WER                 : {wer_frac*100:5.2f} %  ({edits} edits in {ref_words} words)")
+        sys.stdout.flush()
+    return out
 
 
 def find_default_audio() -> Path | None:
@@ -224,16 +272,28 @@ def write_markdown(env, audio_path, audio_duration, results, out_path: Path):
                  + (f" ({audio_duration:.1f} s)" if audio_duration else ""))
     lines.append("")
 
-    lines.append("## Speed (per model)")
+    has_wer = any(r.get("wer") is not None for r in results)
+    lines.append("## Speed and accuracy (per model)" if has_wer else "## Speed (per model)")
     lines.append("")
-    lines.append("| Model | Load (s) | Warmup (s) | Median run (s) | Realtime factor |")
-    lines.append("|---|---|---|---|---|")
+    if has_wer:
+        lines.append("| Model | Load (s) | Warmup (s) | Median run (s) | Realtime factor | WER |")
+        lines.append("|---|---|---|---|---|---|")
+    else:
+        lines.append("| Model | Load (s) | Warmup (s) | Median run (s) | Realtime factor |")
+        lines.append("|---|---|---|---|---|")
     for r in results:
         rt = f"x{r['realtime_factor']}" if r["realtime_factor"] else "—"
-        lines.append(f"| **{r['model']}** | {r['load_time_s']} "
-                     f"| {r['warmup_time_s']} "
-                     f"| {r['transcribe_time_s']} "
-                     f"| {rt} |")
+        if has_wer:
+            wer_cell = f"{r['wer'] * 100:.2f}%" if r.get("wer") is not None else "—"
+            lines.append(f"| **{r['model']}** | {r['load_time_s']} "
+                         f"| {r['warmup_time_s']} "
+                         f"| {r['transcribe_time_s']} "
+                         f"| {rt} | {wer_cell} |")
+        else:
+            lines.append(f"| **{r['model']}** | {r['load_time_s']} "
+                         f"| {r['warmup_time_s']} "
+                         f"| {r['transcribe_time_s']} "
+                         f"| {rt} |")
     lines.append("")
     lines.append("- _Load_: time for `whisper.load_model(name)` (cold disk read).")
     lines.append("- _Warmup_: first `transcribe()` call. PyTorch lazily compiles "
@@ -283,6 +343,8 @@ def main():
                         help=f"Models to benchmark (default: {' '.join(DEFAULT_MODELS)})")
     parser.add_argument("--runs", type=int, default=DEFAULT_RUNS_PER_MODEL,
                         help=f"Timed runs per model after warm-up (default: {DEFAULT_RUNS_PER_MODEL})")
+    parser.add_argument("--reference", type=Path, default=None,
+                        help="Optional plain-text ground-truth transcript. When set, BENCHMARKS.md gains a WER column.")
     parser.add_argument("--out-dir", type=Path,
                         default=Path(__file__).resolve().parent,
                         help="Where to write benchmark_results.json and BENCHMARKS.md")
@@ -309,11 +371,16 @@ def main():
     print(f"  audio   : {audio_path}  ({duration:.1f} s)")
     print(f"  models  : {' -> '.join(args.models)}  (sequential)")
     print(f"  runs    : {args.runs} timed per model (after one warm-up)")
+    reference_text = None
+    if args.reference and args.reference.exists():
+        reference_text = args.reference.read_text(encoding="utf-8").strip()
+        ref_words = len(normalise_for_wer(reference_text))
+        print(f"  reference: {args.reference}  ({ref_words} words)")
 
     results = []
     for name in args.models:
         try:
-            r = benchmark_one(name, audio_path, args.runs)
+            r = benchmark_one(name, audio_path, args.runs, reference_text)
             results.append(r)
         except KeyboardInterrupt:
             print("\nInterrupted; writing partial results.")

@@ -4,6 +4,28 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.5.1] -- 2026-05
+
+Benchmark refresh.
+
+### New
+
+- `benchmark.py` learns about ground-truth references. Pass
+  `--reference path/to/text.txt` and the generated `BENCHMARKS.md`
+  picks up a Word Error Rate column. Reference and hypothesis are
+  normalised before alignment so the canonical all-caps LibriSpeech
+  references compare cleanly with the model output.
+- New benchmark clip: `samples/librispeech-1272-128104-0004.flac`,
+  29.4 s, with the verbatim LibriSpeech reference next to it.
+  Long-enough and varied-enough to actually rank the larger models.
+
+### Changed
+
+- `BENCHMARKS.md` rebuilt against the new clip across all six
+  default-visible models. Headlines: WER 16.18% on tiny.en,
+  8.82% on large-v3-turbo, realtime factors that move with the
+  parameter count.
+
 ## [0.5.0] — 2026-05
 
 The "every Whisper model" release.
