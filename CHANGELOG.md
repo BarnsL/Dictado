@@ -4,6 +4,37 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## v0.6.8 - 2026-05-21
+
+Click fallback when UIA SetFocus is swallowed by the Chromium
+accessibility bridge.
+
+### Symptom
+
+Recording finished, transcribed, the rating popup appeared with the
+right text, but the AIM target's chat input stayed empty. Daemon log
+showed SetFocus succeeding and then the verify-loop expiring without
+the target ever becoming focused.
+
+### Root cause
+
+A known Chromium accessibility-bridge bug: UIA `SetFocus` against an
+Electron app's WebContents element silently no-ops. The bridge
+acknowledges the focus call but the underlying DOM focus engine
+doesn't get the notification. Aggravated by app-to-app foreground
+transitions which trigger Chromium's WebContents focus auto-restore.
+
+### Fix
+
+A synthetic left-click at the target element's rect-center via
+Win32 mouse_event. Real clicks propagate through Chromium's input
+pipeline; DOM focus changes for real. Cursor position is saved
+and restored so the user doesn't see a persistent jump. ~30 ms.
+
+After the click, re-run the focus verify-loop for 500 ms. If
+`GetFocusedElement()` matches the target, the subsequent paste lands
+in the chat input.
+
 ## v0.6.7 - 2026-05-21
 
 AIM regression fix: when the target app's chat-input `Name` drifts

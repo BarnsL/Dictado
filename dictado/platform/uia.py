@@ -463,6 +463,57 @@ def wait_for_chat_input(hwnd: int, *,
     return False
 
 
+def _click_element_rect(rect: tuple[int, int, int, int]) -> bool:
+    """Synthesize a left mouse-down/up at the rect's screen-space
+    center. Returns True if the click was issued (does not verify
+    that anything received it).
+
+    This is the SetFocus-failed fallback for Chromium-based
+    targets. UIA SetFocus on Chromium controls can get swallowed
+    by the accessibility bridge before reaching DOM focus; a real
+    mouse click propagates through Chromium's input pipeline and
+    sets DOM focus reliably. ~30 ms end-to-end including the cursor
+    save/restore.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return False
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+    l, t, r, b = rect
+    if r <= l or b <= t:
+        return False
+    cx = (l + r) // 2
+    cy = (t + b) // 2
+
+    # Save cursor so we can restore it after the click. Some users
+    # have very specific cursor positioning (e.g. on a tiling WM
+    # this can clobber a window-management gesture).
+    pt = wintypes.POINT()
+    if not user32.GetCursorPos(ctypes.byref(pt)):
+        pt.x, pt.y = cx, cy
+
+    # SetCursorPos -> mouse_event(LEFTDOWN) -> brief sleep ->
+    # mouse_event(LEFTUP) -> SetCursorPos to original.
+    MOUSEEVENTF_LEFTDOWN = 0x0002
+    MOUSEEVENTF_LEFTUP   = 0x0004
+    try:
+        user32.SetCursorPos(cx, cy)
+        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.008)
+        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    except Exception:
+        return False
+    finally:
+        try:
+            user32.SetCursorPos(pt.x, pt.y)
+        except Exception:
+            pass
+    return True
+
+
 def focus_chat_input(hwnd: int, *,
                      timeout_s: float = _DEFAULT_TIMEOUT_S,
                      name_regex: "re.Pattern | None" = None) -> bool:
@@ -534,7 +585,36 @@ def focus_chat_input(hwnd: int, *,
                 pass
         time.sleep(_FOCUS_VERIFY_INTERVAL_S)
 
-    logger.warning("focus_chat_input(0x%08X): SetFocus issued but the "
-                   "focused element did not match the target within "
-                   "%.2fs.", hwnd, timeout_s)
+    logger.info("focus_chat_input(0x%08X): SetFocus did not stick "
+                "within %.2fs; trying SendInput click fallback at "
+                "rect=%s.", hwnd, timeout_s, target.rect)
+
+    # SendInput-click fallback. UIA SetFocus failures against Chromium
+    # mean the accessibility bridge swallowed the focus change before
+    # it reached DOM focus. A real left-click DOES propagate through
+    # Chromium's input pipeline. ~30 ms cursor blip; visible but
+    # imperceptible at typical typing cadence.
+    if _click_element_rect(target.rect):
+        # Re-verify focus after the click. Chromium typically commits
+        # within ~50 ms.
+        verify_deadline = time.monotonic() + 0.5
+        while time.monotonic() < verify_deadline:
+            try:
+                focused = uia.GetFocusedElement()
+            except Exception:
+                focused = None
+            if focused is not None:
+                try:
+                    if uia.CompareElements(focused, target.element):
+                        logger.info(
+                            "focus_chat_input(0x%08X): click fallback "
+                            "succeeded.", hwnd)
+                        return True
+                except Exception:
+                    pass
+            time.sleep(_FOCUS_VERIFY_INTERVAL_S)
+
+    logger.warning("focus_chat_input(0x%08X): SetFocus AND click "
+                   "fallback both failed to move focus within %.2fs.",
+                   hwnd, timeout_s)
     return False

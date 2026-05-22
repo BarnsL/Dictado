@@ -466,3 +466,54 @@ can break warm-state callers when the target app's accessibility
 tree drifts. Match policy to context: cold launch = strict (we're
 racing the loader), warm = best-effort (the window's mature, rect
 heuristics are precise enough).
+
+
+---
+
+## Follow-up 6: SetFocus silently no-ops on Chromium; click fallback
+
+**Discovered:** 2026-05-21 22:51:28. After v0.6.7's two-phase picker
+shipped, picker found the candidate via the rect fallback. New
+failure mode:
+
+```
+[INFO] _pick_chat_input: regex matched 0 candidates; falling back to
+       rect heuristics over 1 focusable elements.
+[WARNING] focus_chat_input(0x..): SetFocus issued but the focused
+          element did not match the target within 0.60s.
+[INFO] UIA could not focus a chat input under hwnd 0x..; falling
+       back to Ctrl+L.
+```
+
+UIA `SetFocus` was issued. The verify-loop polled
+`GetFocusedElement()` for 600 ms and never saw the target focused.
+SetFocus silently no-op'd. Long-standing Chromium accessibility
+bridge issue: UIA `SetFocus` against an Electron app's chat input
+goes through the bridge and gets ignored before it reaches the
+inner DOM focus state.
+
+Aggravated by app-to-app foreground transitions: the foreground
+swap delivers `WM_ACTIVATE` to the target, Chromium handles it by
+restoring its last-known WebContents focus (typically a button or
+the New Chat list), UIA SetFocus then fights against Chromium's
+auto-restore and loses.
+
+### Fix shipped in v0.6.8
+
+When SetFocus's verify-loop expires, fall back to a synthetic
+left-click at the target element's rect-center via Win32
+`SetCursorPos` + `mouse_event(LEFTDOWN)` + `mouse_event(LEFTUP)`.
+A real click propagates through Chromium's input pipeline as a
+synthesized OS input event, which DOES set DOM focus reliably.
+Cursor position is saved and restored so the user doesn't see it
+move persistently. ~30 ms end-to-end.
+
+Re-run the focus verify-loop for 500 ms. If `GetFocusedElement()`
+matches the target, the subsequent paste lands in the chat input.
+
+### Lesson
+
+UIA `SetFocus` is a heuristic against Chromium-based apps. It
+works when the bridge is in a cooperative state; when it doesn't,
+there's no error, no exception, just silent no-op. The verify-loop
+catches it. The click fallback closes the loop.
