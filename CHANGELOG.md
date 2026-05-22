@@ -4,6 +4,45 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.6.0] -- 2026-05-22
+
+The "no-hands" release.
+
+### New
+
+- **Wake-word activation.** Tray menu now has a "Voice activation"
+  toggle. Flip it on and Dictado starts listening for one of a
+  configurable list of wake phrases ("hey bijou", "ok biboo",
+  "salutations bijou", etc.). When a phrase is heard, the daemon
+  starts a recording the same way pressing Alt+T would.
+- **Implementation lives in `dictado/wake_word.py`.** A
+  secondary Whisper `tiny.en` instance transcribes a 2.5-second
+  rolling microphone buffer at 500 ms cadence. A cheap RMS check
+  short-circuits when the room is silent so the model only runs
+  when there\'s actually voice activity â€” keeps idle CPU around
+  0.5%.
+- **Two assistant names recognised by default.** Bijou
+  (*bee-joo*) and Biboo (*bee-boo*), each prefixed with any of
+  `hey`, `ok`, `okay`, `yo`, `hello`, `hi`, `greetings`,
+  `salutations`. The matcher tolerates Whisper\'s common
+  mistranscriptions of these unusual proper nouns (bayou,
+  beejoo, bijoux, bibu, etc).
+- **Custom phrase list via `wake_word_phrases` in
+  `config.json`.** Each entry becomes one alternation; the last
+  word is treated as the name, with phonetic-variant fuzzing if
+  it\'s a recognised name (`bijou`, `biboo`).
+- **`docs/WAKE_WORD.md`** â€” full design, architecture diagram,
+  tuning, troubleshooting, and the playbook for adding more
+  wake names.
+
+### Notes
+
+- Off by default â€” no listening happens unless the user opts
+  in.
+- Costs ~140 MB RAM and ~5% CPU when active speech is
+  triggering inference; ~0.5% idle.
+- The detector pauses while a recording is in progress so it
+  can\'t terminate the user\'s own dictation.
 ## [0.5.7] -- 2026-05-22
 
 No more console flash on recording end.

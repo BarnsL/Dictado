@@ -64,6 +64,12 @@ from . import config as _cfg
 from .platform import adapter as _platform_adapter
 from .archive import archive_recording, default_archive_dir
 from . import agent_input as _aim
+from . import wake_word as _wake
+
+# Wake-word detector instance, lazily started when the user enables
+# the feature from the tray menu. None when wake-word is OFF.
+wake_detector = None  # type: _wake.WakeWordDetector | None
+wake_word_enabled = False
 from . import models as _models
 
 _plat = _platform_adapter()
@@ -398,6 +404,11 @@ def start_recording() -> None:
         if model is None:
             logger.warning("Record requested but model not loaded yet.")
             return
+    # Pause the wake-word listener while a recording is in progress
+    # so it can't fire again on whatever the user is currently saying.
+    if wake_detector is not None:
+        try: wake_detector.pause()
+        except Exception: logger.exception("wake_detector.pause raised.")
         recording = True
         audio_frames = []
         _last_partial_frame_count = 0
@@ -587,6 +598,10 @@ def stop_recording() -> None:
 
     time.sleep(1.2); _popup("hide")
     status_text = "Ready"; _update_icon_tooltip(); _update_tray_icon("green")
+    # Resume the wake-word listener now that the recording's done.
+    if wake_detector is not None:
+        try: wake_detector.resume()
+        except Exception: logger.exception("wake_detector.resume raised.")
 
 
 def toggle_recording() -> None:
@@ -727,6 +742,63 @@ def _build_aim_submenu() -> Menu:
                                   checked=_is_aim(app.id), radio=True))
     return Menu(*items)
 
+def _on_wake_phrase_detected(matched_text: str) -> None:
+    """Called by the wake_word detector thread when a phrase fires.
+    Hands off to start_recording() on a fresh thread so the listener
+    can release before pause() takes effect inside start_recording."""
+    logger.info("Wake-word triggered start_recording (matched: %r).",
+                matched_text)
+    threading.Thread(target=start_recording, daemon=True,
+                     name="wake-start").start()
+
+
+def _start_wake_detector_async() -> None:
+    """Build + start the WakeWordDetector on a daemon thread so the
+    initial whisper.load_model('tiny.en') doesn't block the tray."""
+    global wake_detector
+    cfg = _cfg.load()
+    phrases = cfg.get("wake_word_phrases") or []
+    try:
+        rx = (_wake.build_user_wake_regex(phrases)
+              if phrases else _wake.build_default_wake_regex())
+    except Exception:
+        logger.exception("Bad wake_word_phrases; using default regex.")
+        rx = _wake.build_default_wake_regex()
+    wake_detector = _wake.WakeWordDetector(
+        on_wake=_on_wake_phrase_detected,
+        wake_regex=rx,
+    )
+    threading.Thread(target=wake_detector.start, daemon=True,
+                     name="wake-bootstrap").start()
+
+
+def _stop_wake_detector() -> None:
+    global wake_detector
+    if wake_detector is None:
+        return
+    try: wake_detector.stop()
+    except Exception: logger.exception("wake_detector.stop raised.")
+    wake_detector = None
+
+
+def _toggle_wake_word(icon_ref, item) -> None:
+    global wake_word_enabled
+    wake_word_enabled = not wake_word_enabled
+    _cfg.update(wake_word_enabled=wake_word_enabled)
+    if wake_word_enabled:
+        _start_wake_detector_async()
+    else:
+        _stop_wake_detector()
+    if icon_ref is not None:
+        icon_ref.menu = _build_tray_menu()
+        icon_ref.update_menu()
+    logger.info("wake_word_enabled -> %s", wake_word_enabled)
+
+
+def _is_wake_word_enabled(item) -> bool:
+    return wake_word_enabled
+
+
 def _build_tray_menu() -> Menu:
     model_items = [MenuItem(_models.display_for(name),
                             _make_model_switcher(name),
@@ -753,6 +825,8 @@ def _build_tray_menu() -> Menu:
                  _toggle_autopaste, checked=_is_autopaste),
         MenuItem(f'Agent Input Mode  ({_aim.app_label_for(agent_input_mode)})',
                  _build_aim_submenu()),
+        MenuItem('Voice activation ("Hey Bijou" / "Hey Biboo" ...)',
+                 _toggle_wake_word, checked=_is_wake_word_enabled),
         Menu.SEPARATOR,
         MenuItem("Quit", _quit_daemon),
     )
@@ -857,6 +931,8 @@ def main() -> None:
     global agent_input_mode
     autopaste_enabled = bool(cfg.get("autopaste", True))
     agent_input_mode = cfg.get("agent_input", "off") or "off"
+    global wake_word_enabled
+    wake_word_enabled = bool(cfg.get("wake_word_enabled", False))
     popup_enabled     = bool(cfg.get("popup", True))
     language          = cfg.get("language", "en")
     initial_model     = cfg.get("model", "medium")
@@ -871,6 +947,13 @@ def main() -> None:
     hotkey_handle = _plat.register_hotkey(toggle_recording, current_hotkey_spec)
     threading.Thread(target=_trigger_loop, daemon=True, name="trigger").start()
     threading.Thread(target=_popup_loop,   daemon=True, name="popup").start()
+
+    # Bring the wake-word detector up if the user had it enabled
+    # at last shutdown. Off by default, so this is a no-op for users
+    # who haven't toggled it on. The detector loads tiny.en lazily on
+    # its own thread so daemon startup isn't blocked.
+    if wake_word_enabled:
+        _start_wake_detector_async()
 
     icon = Icon("dictado", _create_icon_image("gray"),
                 title="dictado - starting...", menu=_build_tray_menu())

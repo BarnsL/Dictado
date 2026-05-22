@@ -174,6 +174,62 @@ red (recording), yellow (transcribing).
 
 ---
 
+## Hands-free activation (wake word)
+
+Tray menu → **Voice activation ("Hey Bijou" / "Hey Biboo" ...)**.
+
+When checked, Dictado loads a small auxiliary Whisper model
+(`tiny.en`, ~39 MB) onto its own thread and listens to a rolling
+2.5-second microphone buffer. Saying any of the configured wake
+phrases triggers a recording the same way pressing the hotkey
+would.
+
+The default phrase list takes either of two assistant names —
+**Bijou** (*bee-joo*) or **Biboo** (*bee-boo*) — preceded by any
+of: `hey`, `ok`, `okay`, `yo`, `hello`, `hi`, `greetings`,
+`salutations`. So `hey bijou`, `ok biboo`, `yo bijou`, `salutations
+biboo`, etc. all work. The matcher is forgiving about how Whisper
+transcribes those unusual names: variants like `bayou`, `bee-joo`,
+`bijoux`, `bibu`, and `bee boo` are all recognised.
+
+To override the phrase list, drop entries into `wake_word_phrases`
+in your `config.json`:
+
+```json
+{
+  "wake_word_enabled": true,
+  "wake_word_phrases": [
+    "hey bijou",
+    "ok biboo",
+    "computer activate"
+  ]
+}
+```
+
+Config locations:
+
+| OS      | Path |
+|---------|------|
+| Windows | `%LOCALAPPDATA%\dictado\config.json` |
+| macOS   | `~/Library/Application Support/dictado/config.json` |
+| Linux   | `~/.local/share/dictado/config.json` |
+
+Each phrase's last word becomes the "name"; recognised names
+(`bijou`, `biboo`) get phonetic-variant fuzzing applied
+automatically. Other names are matched literally. With
+`wake_word_phrases` empty or absent, the default list applies.
+
+**The toggle is opt-in.** Idle CPU with the listener enabled but
+nobody talking is ~0.5%; active listening peaks around 5%.
+Memory cost is ~140 MB for the auxiliary model. Default is OFF, so
+users who only need the hotkey path pay zero overhead.
+
+The full design — architecture diagram, tuning knobs, troubleshooting,
+how to add a new wake name — lives at
+[`docs/WAKE_WORD.md`](docs/WAKE_WORD.md).
+
+---
+
 ## Models
 
 Dictado loads any model the upstream `openai-whisper` package
