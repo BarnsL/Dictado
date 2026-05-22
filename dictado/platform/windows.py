@@ -444,17 +444,37 @@ def _shortcut_path() -> Path:
 
 
 def install_autostart(python_exe: str, script_path: str) -> Path:
-    """Create a Startup-folder .lnk that launches the daemon at every login."""
+    """Create a Startup-folder .lnk that launches the daemon at every login.
+
+    v0.6.10: every interpolated value is single-quote-escaped before
+    being embedded in the PowerShell heredoc. A path containing a
+    single quote (legal on Windows; the OS allows it in user folder
+    names like "Travis O'Brien") would otherwise break out of the
+    literal and execute arbitrary PowerShell. python_exe and
+    script_path are sourced from sys.executable / __file__ so the
+    risk is limited, but defense-in-depth: escape all of them.
+    """
     target = _shortcut_path()
     target.parent.mkdir(parents=True, exist_ok=True)
+
+    def _q(s: str) -> str:
+        # PowerShell single-quoted literal escape: double the quote.
+        return str(s).replace("'", "''")
+
+    ps_target     = _q(str(target))
+    ps_python     = _q(python_exe)
+    ps_script     = _q(script_path)
+    ps_workdir    = _q(str(Path(script_path).parent))
+    ps_descr      = _q("dictado daemon")
+
     ps = (
         f"$wsh = New-Object -ComObject WScript.Shell;"
-        f"$lnk = $wsh.CreateShortcut('{target}');"
-        f"$lnk.TargetPath = '{python_exe}';"
-        f"$lnk.Arguments = '\"{script_path}\"';"
-        f"$lnk.WorkingDirectory = '{Path(script_path).parent}';"
+        f"$lnk = $wsh.CreateShortcut('{ps_target}');"
+        f"$lnk.TargetPath = '{ps_python}';"
+        f"$lnk.Arguments = '\"{ps_script}\"';"
+        f"$lnk.WorkingDirectory = '{ps_workdir}';"
         f"$lnk.WindowStyle = 7;"
-        f"$lnk.Description = 'dictado daemon';"
+        f"$lnk.Description = '{ps_descr}';"
         f"$lnk.Save();"
     )
     subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True)

@@ -64,6 +64,15 @@ DEFAULTS = {
     # RMS below which a captured frame counts as "silent". Lower =
     # stops on quieter pauses; higher = stops only on real silence.
     "wake_silence_rms_threshold":  0.010,
+    # ---- Microphone selection -------------------------------------
+    # null = follow whatever the OS says is the default input device
+    # right now (matches the behaviour of every browser-based app:
+    # Teams, Zoom, Discord, Chrome). When set to a string, the daemon
+    # searches PyAudio's device list for a device whose name CONTAINS
+    # this string (case-insensitive substring match). Re-resolved on
+    # every recording so a hotplugged device picks up without
+    # restarting. Configure via the tray "Microphone" submenu.
+    "audio_device_name": None,
 }
 
 # Convenience presets surfaced in the tray menu. The user can also pick
@@ -211,6 +220,9 @@ def load() -> dict:
         wsl = on_disk.get("wake_sound_lead_s")
         if isinstance(wsl, (int, float)) and 0.0 <= wsl <= 5.0:
             cfg["wake_sound_lead_s"] = float(wsl)
+        adn = on_disk.get("audio_device_name")
+        if adn is None or (isinstance(adn, str) and len(adn) <= 200):
+            cfg["audio_device_name"] = adn
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     save(cfg)

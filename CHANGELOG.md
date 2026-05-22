@@ -4,6 +4,47 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## v0.6.10 - 2026-05-21
+
+Tray-menu mic picker + security hardening.
+
+### Microphone selection
+
+A user report flagged wake-word activation breaking when a USB
+headset was plugged in mid-session. Root cause: pyaudio streams
+were being opened without a specific `input_device_index`, so they
+followed the OS's "current default" -- which Windows had silently
+swapped during the hotplug. The wake-word listener and the
+recording path ended up bound to different devices.
+
+The fix is a new `audio_device_name` config key (default null =
+OS default), a small `dictado.audio` helper module that enumerates
+input devices and resolves a configured substring to a current
+index on demand, and a new **Microphone** tray submenu where the
+user picks from the live device list. Picking a device restarts
+the wake-word listener so it re-binds.
+
+The lookup is fresh per call, so unplugging and replugging the
+chosen mic doesn't require a restart.
+
+### Security pass
+
+A PowerShell command-injection vector in `_play_wake_sound()` is
+closed: the configured `wake_sound_path` was interpolated into a
+PS literal with single quotes. A path containing a `'` would have
+terminated the literal and executed the rest as PowerShell. Single
+quotes are now doubled per PS escape convention; the volume is
+rendered as a clamped float.
+
+The same escape was applied to `install_autostart()` where the
+Python executable, script path, and shortcut target were
+interpolated similarly.
+
+`docs/SECURITY.md` is now a full security-model doc covering threat
+model, on-disk artefacts, EDR mapping, input-validation audit
+trail, defensive-configuration recipe, post-incident checklist,
+and vulnerability reporting process.
+
 ## v0.6.9 - 2026-05-21
 
 Geometry-based click when UIA's tree collapses to a single Document.

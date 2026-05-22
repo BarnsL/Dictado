@@ -66,6 +66,7 @@ from .archive import archive_recording, default_archive_dir
 from . import agent_input as _aim
 from . import wake_word as _wake
 from . import paths as _paths
+from . import audio as _audio
 
 # Wake-word detector instance, lazily started when the user enables
 # the feature from the tray menu. None when wake-word is OFF.
@@ -330,11 +331,22 @@ def _play_wake_sound() -> None:
             #   4. Wrapping in try/finally + $p.Close() releases the
             #      WMF media handle cleanly so the file isn't held
             #      open if the user later edits it.
+            # PowerShell single-literal escape: a single quote inside
+            # a 'literal' string is doubled. We MUST escape both the
+            # path and (defensively) the volume in case future code
+            # paths plumb a non-numeric volume in. v0.6.10 closes a
+            # command-injection vector that existed since v0.6.1
+            # (the wake-sound feature shipped) -- a wake_sound_path
+            # config value containing a single quote would have
+            # terminated the literal early and the rest of the path
+            # would have run as PowerShell code.
+            ps_path = path.replace("'", "''")
+            ps_volume = f"{float(volume):.4f}"
             ps_cmd = (
                 f"Add-Type -AssemblyName presentationCore;"
                 f"$p=New-Object System.Windows.Media.MediaPlayer;"
-                f"$p.Volume={volume};"
-                f"$p.Open([System.Uri]::new('{path}'));"
+                f"$p.Volume={ps_volume};"
+                f"$p.Open([System.Uri]::new('{ps_path}'));"
                 # Wait up to 2 s for the async Open to populate
                 # NaturalDuration. HasAudio flips True when the
                 # decoder has confirmed the file actually contains
@@ -612,9 +624,22 @@ def start_recording() -> None:
     _popup("show")
     _popup("status", "Recording")
 
+    # Resolve mic device fresh on every recording so a hotplugged
+    # USB headset / disconnected dock mic is picked up without
+    # restarting the daemon. v0.6.10.
+    try:
+        cfg_now = _cfg.load()
+        device_name = cfg_now.get("audio_device_name")
+    except Exception:
+        device_name = None
+    device_idx = _audio.resolve_input_device_index(device_name)
+
     pa = pyaudio.PyAudio()
-    stream = pa.open(format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
-                     input=True, frames_per_buffer=CHUNK)
+    open_kwargs = dict(format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
+                       input=True, frames_per_buffer=CHUNK)
+    if device_idx is not None:
+        open_kwargs["input_device_index"] = device_idx
+    stream = pa.open(**open_kwargs)
 
     def _record_loop(_pa, _stream):
         global recording
@@ -1126,6 +1151,84 @@ def _toggle_wake_word(icon_ref, item) -> None:
 
 def _is_wake_word_enabled(item) -> bool:
     return wake_word_enabled
+
+
+def _current_microphone_label() -> str:
+    """Tray-menu label suffix showing the currently selected mic."""
+    try:
+        cfg = _cfg.load()
+        name = cfg.get("audio_device_name")
+    except Exception:
+        return "default"
+    if not name:
+        return "default"
+    return name[:30] + ("..." if len(name) > 30 else "")
+
+
+def _make_microphone_picker(name: str | None):
+    """Make a tray-menu callback that persists the chosen mic name
+    and restarts the wake-word listener so it re-binds against the
+    new device immediately.
+    """
+    def _on_pick(icon_ref, item):
+        try:
+            _cfg.update(audio_device_name=name)
+        except Exception:
+            logger.exception("Failed to persist audio_device_name.")
+            return
+        logger.info("Microphone selection -> %r", name)
+        # Restart wake-word listener so it picks up the new device.
+        # If wake isn't enabled, this is a no-op.
+        try:
+            cfg = _cfg.load()
+            if cfg.get("wake_word_enabled", False):
+                _stop_wake_detector()
+                _start_wake_detector_async()
+        except Exception:
+            logger.exception("Failed to restart wake listener after "
+                             "mic change; will pick up on next user "
+                             "toggle.")
+        if icon is not None:
+            icon.menu = _build_tray_menu()
+            icon.update_menu()
+    return _on_pick
+
+
+def _is_microphone_selected(name: str | None):
+    def _check(item):
+        try:
+            current = _cfg.load().get("audio_device_name")
+        except Exception:
+            current = None
+        return current == name
+    return _check
+
+
+def _build_microphone_submenu() -> Menu:
+    """Enumerate input devices fresh and offer a radio-button picker."""
+    items = [MenuItem("System default",
+                      _make_microphone_picker(None),
+                      checked=_is_microphone_selected(None),
+                      radio=True)]
+    devices = _audio.list_input_devices()
+    if devices:
+        items.append(Menu.SEPARATOR)
+        # Cap to 12 devices in the menu so a host with a virtual-cable
+        # zoo doesn't produce a 50-item submenu.
+        for dev in devices[:12]:
+            label = dev["name"]
+            if dev["default"]:
+                label += "  (system default)"
+            # Truncate long labels for the menu.
+            if len(label) > 60:
+                label = label[:57] + "..."
+            items.append(MenuItem(
+                label,
+                _make_microphone_picker(dev["name"]),
+                checked=_is_microphone_selected(dev["name"]),
+                radio=True,
+            ))
+    return Menu(*items)
 
 
 def _build_tray_menu() -> Menu:

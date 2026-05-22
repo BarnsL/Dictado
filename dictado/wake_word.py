@@ -584,6 +584,19 @@ class WakeWordDetector:
             logger.exception("pyaudio not available; wake-word disabled.")
             self._stop_event.set()
             return
+        # Re-read audio_device_name from config on every stream
+        # open so a hotplug or tray-menu change picks up here too,
+        # without needing a daemon restart. v0.6.10.
+        try:
+            from . import config as _cfg
+            from . import audio as _audio
+            cfg_now = _cfg.load()
+            self._device_index = _audio.resolve_input_device_index(
+                cfg_now.get("audio_device_name"))
+        except Exception:
+            logger.exception("wake-word: failed to resolve audio device; "
+                             "falling back to OS default.")
+            self._device_index = None
         try:
             self._pyaudio_inst = pyaudio.PyAudio()
             self._stream = self._pyaudio_inst.open(
