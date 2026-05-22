@@ -4,6 +4,36 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## v0.6.12 - 2026-05-22
+
+Catch tiny.en's "beef oo" rendering of biboo, and tolerate dropped
+wake-prefixes.
+
+### What was failing
+
+A user reported five back-to-back activation attempts going nowhere.
+The transcript log showed tiny.en consistently producing "beef oo" /
+"beefoo" for "biboo", and dropping the prefix word entirely on the
+quieter attempts.
+
+### What changed
+
+The BIBOO regex now includes `beef[\s\-]*(?:oo|ou|u)` and
+`bee[\s\-]*foo` (plus a few related variants). The trailing
+`oo`/`u` requirement keeps plain `beef` from matching so a
+sentence like "I want beef burgers" stays inert.
+
+A new permissive bare-name regex tries the match without a
+wake-prefix. The listener loop falls through to it only when:
+
+* the strict regex misses,
+* `no_speech_prob <= 0.20` (Whisper is confident),
+* `window_rms >= 0.025` (the audio is loud enough to be a real
+  utterance).
+
+The log entries record which path fired, so future regex tuning
+can start from real data.
+
 ## v0.6.10 - 2026-05-21
 
 Tray-menu mic picker + security hardening.

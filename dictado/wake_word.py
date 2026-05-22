@@ -209,7 +209,12 @@ _BIJOU = (
     # 'p' for 'b' substitution + 'j'/'zh' approximations.
     r"pee[\s\-]*(?:j|zh)(?:oo|ew|u)|"          # pee-joo, peezhew
     r"pi[\s\-]*joo|"
-    r"beat[\s\-]*you"                          # already there but keep belt-and-braces
+    r"beat[\s\-]*you|"                          # already there but keep belt-and-braces
+    # Additional 'biboo'-pronunciation-leak variants seen on the
+    # 'bijou' path (the user says biboo but Whisper splits weirdly):
+    r"bijoo|bigjoo|bigjew|bigju|"
+    r"be[\s\-]*jewel|"                          # 'be-jewel' degradation
+    r"vee[\s\-]*joo|vijou"                     # 'v'/'b' confusion
     r")"
 )
 
@@ -246,7 +251,21 @@ _BIBOO = (
     r"yobu|yo[\s\-]*bu|"                       # 'yo bibu' -> 'yobu'
     # Defensive: 'b' rendered as 'p' is the most common pho swap;
     # match it explicitly.
-    r"piboo|pibu|pibou"
+    r"piboo|pibu|pibou|"
+    # 'beef oo' / 'beefoo' - tiny.en's most common rendering of
+    # 'biboo' on a quiet mic (observed live 2026-05-22 at 08:05 UTC,
+    # 5 attempts in a row, every transcription contained "beef oo").
+    # The 'b' aspirates into the 'f' sound; the 'i' becomes a long
+    # 'e'. We require the 'oo'/'u' tail so 'beef' alone (eating
+    # food, etc.) does NOT match.
+    r"beef[\s\-]*(?:oo|ou|u)|beefoo|beefou|beefu|"
+    r"bee[\s\-]*foo|beefoo|"
+    # 'beep oh' - similar 'p' aspiration of the trailing 'oo'
+    r"beep[\s\-]*oh|beep[\s\-]*o|"
+    # 'b'-elided forms keeping the trailing 'oo' constraint
+    r"ee[\s\-]*boo|ay[\s\-]*boo|"
+    # 'pb-oo' / 'pp-oo' degradations
+    r"pe[\s\-]*boo|pb[\s\-]*oo"
     r")"
 )
 
@@ -267,6 +286,24 @@ def build_default_wake_regex() -> "re.Pattern[str]":
                                   # elides them, sometimes inserts a comma)
         rf"(?:{name_alt})\b"
     )
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def build_permissive_name_regex() -> "re.Pattern[str]":
+    """Bare-name regex without the wake-prefix.
+
+    Used as a SECOND-CHANCE matcher when the strict regex misses but
+    Whisper produced a high-confidence transcription (low
+    no_speech_prob, good RMS). This catches the case where Whisper
+    drops the 'hey' / 'hi' / 'hello' prefix entirely -- a known
+    failure mode of tiny.en on quiet wake utterances.
+
+    The caller MUST gate this on a stricter no_speech_prob and a
+    minimum RMS to avoid false positives on TV / video-call audio
+    that contains "biboo"-shaped phonemes.
+    """
+    name_alt = "|".join(name_rx for _, name_rx in DEFAULT_NAMES)
+    pattern = rf"\b(?:{name_alt})\b"
     return re.compile(pattern, re.IGNORECASE)
 
 
@@ -396,6 +433,11 @@ class WakeWordDetector:
     ):
         self._on_wake = on_wake
         self._wake_regex = wake_regex or build_default_wake_regex()
+        # Permissive bare-name regex used as second-chance match
+        # when the strict prefix-required regex misses but the
+        # transcription has high confidence + loud audio. Catches
+        # the case where Whisper drops the "hey" / "hello" prefix.
+        self._permissive_regex = build_permissive_name_regex()
         self._model_name = model_name
         self._device_index = device_index
 
@@ -739,10 +781,22 @@ class WakeWordDetector:
             # has a clean target.
             normalised = re.sub(r"[^\w\s\-]", " ", text.lower())
             normalised = re.sub(r"\s+", " ", normalised).strip()
-            if self._wake_regex.search(normalised):
-                logger.info("Wake match: %r (window rms=%.3f, "
+            matched_strict = self._wake_regex.search(normalised)
+            matched_permissive = None
+            if matched_strict is None:
+                # Second-chance: bare name without prefix, gated on
+                # high confidence + loud audio. Whisper sometimes
+                # drops the wake-prefix entirely on tiny.en.
+                if (max_no_speech <= 0.20
+                        and window_rms >= 0.025
+                        and self._permissive_regex.search(normalised)):
+                    matched_permissive = True
+
+            if matched_strict or matched_permissive:
+                path = "strict" if matched_strict else "permissive"
+                logger.info("Wake match (%s): %r (window rms=%.3f, "
                             "max_no_speech=%.2f)",
-                            text, window_rms, max_no_speech)
+                            path, text, window_rms, max_no_speech)
                 # Cooldown + clear the buffer so the next match cycle
                 # gets fresh audio.
                 self._cooldown_until = time.monotonic() + COOLDOWN_SECONDS
