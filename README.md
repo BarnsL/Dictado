@@ -1,4 +1,4 @@
-# Dictado
+﻿# Dictado
 
 > Talk into your computer. Get text where the cursor was. That's the
 > whole product.
@@ -73,7 +73,23 @@ pip install --user .
 The first launch downloads Whisper weights to `~/.cache/whisper/`. After
 that there's nothing on the wire.
 
-To start the daemon:
+### Double-click launcher
+
+The fastest way to start the daemon is the platform-specific launcher
+in the repo root. Same end result as a packaged executable, with none
+of the PyInstaller bloat:
+
+| Platform | File               | What to do |
+|----------|--------------------|------------|
+| Windows  | `Dictado.cmd`      | Double-click it. Pin a shortcut to your taskbar for a one-click experience. |
+| macOS    | `Dictado.command`  | `chmod +x` once, then double-click. Right-click â†’ Open With â†’ Terminal on the very first run so Gatekeeper lets it through. |
+| Linux    | `dictado.desktop`  | Copy into `~/.local/share/applications/` and `chmod +x`. It then appears in your application menu like any other app. |
+
+Each one finds a Python 3.10+ on PATH, prefers the sibling `.venv`
+when one is present, and hands off to `python -m dictado`. The files
+are short and heavily commented if you want to tweak them.
+
+### â€¦or run it from a shell
 
 ```bash
 dictado            # foreground; logs to stdout AND ~/...local/share/dictado/daemon.log
@@ -82,6 +98,11 @@ python -m dictado  # equivalent
 
 A microphone icon shows up in the system tray. Wait for it to turn green
 and you're ready.
+
+> Why no `.exe` / `.app`? Whisper + PyTorch + ffmpeg combined are
+> ~2 GB once frozen. The launcher scripts keep the install lean and
+> use `pythonw` out of the system-wide `Program Files\Python313` â€”
+> the path your endpoint-protection software already trusts.
 
 To make Dictado start at login:
 

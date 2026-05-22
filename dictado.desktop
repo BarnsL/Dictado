@@ -1,0 +1,32 @@
+[Desktop Entry]
+Type=Application
+Name=Dictado
+GenericName=Dictation
+Comment=On-device push-to-talk dictation via Whisper. Runs in the system tray.
+Exec=sh -c 'cd "$(dirname "$(readlink -f %k)")" && PYTHONPATH=".venv/lib/python3/site-packages:$PYTHONPATH" python3 -m dictado'
+Icon=audio-input-microphone
+Terminal=false
+StartupNotify=false
+Categories=Utility;AudioVideo;Office;
+Keywords=dictation;voice;speech;whisper;transcription;
+StartupWMClass=Dictado
+
+# Install instructions:
+#   1. Drop this file at ~/.local/share/applications/dictado.desktop
+#      (per-user; no sudo) OR /usr/share/applications/dictado.desktop
+#      (system-wide; needs sudo).
+#   2. chmod +x dictado.desktop
+#   3. update-desktop-database ~/.local/share/applications/  (optional)
+#   4. Dictado now shows up in your application menu.
+#
+# Some file managers also let you mark a .desktop file on the Desktop
+# itself as "trusted" via the right-click menu, which is the GUI
+# equivalent of chmod +x.
+#
+# First-run reminders:
+#   - Wayland: pynput's global hotkey grab is blocked by the compositor.
+#     Bind a system-wide DE shortcut to:  python3 -m dictado --toggle
+#   - X11: pynput grabs the Alt+T combo directly; no extra setup.
+#   - System packages you'll want before first run:
+#       sudo apt install portaudio19-dev xdotool
+#     (portaudio19-dev for the pyaudio build; xdotool for paste-into-window)

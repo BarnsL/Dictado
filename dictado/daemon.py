@@ -474,30 +474,45 @@ def stop_recording() -> None:
             target_hwnd = foreground_token
             aim = agent_input_mode or 'off'
             if aim not in ('off', 'auto'):
-                # Specific app target: try to focus it.
-                if _aim.activate(aim):
-                    target_hwnd = 0  # _plat.paste_into_window will skip
-                                     # the SetForegroundWindow step and just
-                                     # send Ctrl+V to whatever is foreground
-                                     # now (the app we just activated).
-                else:
+                # Specific-app target. Locate-and-focus its main window
+                # via the verified focus dance (AttachThreadInput + retry
+                # + GetForegroundWindow polling). On success we get the
+                # HWND back so paste_into_window can re-verify focus
+                # right before pumping Ctrl+V; that closes the race
+                # window where Electron apps flash the title bar but
+                # don't actually transfer focus to the input field.
+                target_hwnd = _aim.activate_target(aim, timeout_s=1.0)
+                if not target_hwnd:
                     logger.warning("AIM target %r could not be activated; "
                                    "falling back to 'auto' for this dictation.", aim)
+                    # Fall back to whatever has focus right now so the
+                    # user still gets their text pasted somewhere
+                    # sensible (typically their previous window).
+                    target_hwnd = foreground_token
 
+            pasted = False
             if (autopaste_enabled or aim != 'off') and (target_hwnd or aim != 'off'):
                 try:
-                    _plat.paste_into_window(target_hwnd)
+                    pasted = bool(_plat.paste_into_window(target_hwnd))
                 except Exception:
                     logger.exception("Auto-paste failed; text on clipboard.")
 
-            if aim != 'off':
+            if aim != 'off' and pasted:
                 # AIM always finishes with Enter so the message/prompt sends.
-                # Tiny delay so the paste lands before Enter fires.
-                time.sleep(0.05)
+                # 120 ms settle gives Electron / Chromium input handlers
+                # time to commit the pasted text before the Return chord
+                # arrives; without this delay Slack and Discord
+                # occasionally send an empty message because Ctrl+V's
+                # internal commit and the Enter event interleave.
+                time.sleep(0.12)
                 try:
                     _aim.send_enter()
                 except Exception:
                     logger.exception("AIM send_enter failed.")
+            elif aim != 'off' and not pasted:
+                logger.warning("AIM: paste did not land (focus did not "
+                               "transfer to %r); suppressing Enter. Text "
+                               "remains on the clipboard.", aim)
         else:
             _popup("final", "(no speech detected)"); _popup("status", "Ready")
             logger.info("No speech detected.")

@@ -7,11 +7,30 @@ Three jobs:
        Win32 RegisterHotKey + GetMessage on a daemon thread. The handle
        can be passed to update_hotkey(handle, new_spec) to live-rebind
        the combo without restarting the daemon.
-    2. paste_into_window(hwnd) -- SetForegroundWindow + SendInput Ctrl+V
+    2. paste_into_window(hwnd) -- focus_window + verify + SendInput Ctrl+V
     3. install_autostart() / uninstall -- Startup-folder .lnk shortcut
 
 Why these specific APIs (and not the obvious `keyboard` Python lib)?
     See docs/SECURITY.md.
+
+About focus stealing
+--------------------
+Windows refuses `SetForegroundWindow` calls from a background process or
+thread that doesn't own the current foreground unless it does one of:
+
+    - holds the SE_DEBUG / foreground privilege (we don't),
+    - was just clicked or just received input (we weren't),
+    - attaches its input queue to the foreground thread's queue
+      (the "AttachThreadInput trick").
+
+Without the AttachThreadInput trick, `SetForegroundWindow` returns
+success but the target window only flashes in the taskbar; focus never
+transfers. The result is Ctrl+V landing in the previous foreground app
+(usually our own popup or whatever was active before the user pressed
+the hotkey).
+
+`focus_window()` below implements the trick + a verify-loop so the
+daemon can be confident focus actually moved before it pastes.
 """
 from __future__ import annotations
 
@@ -31,8 +50,29 @@ _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 _user32.GetForegroundWindow.restype = wintypes.HWND
 _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+_user32.SetForegroundWindow.restype  = wintypes.BOOL
 _user32.IsWindow.argtypes = [wintypes.HWND]
 _user32.IsWindow.restype  = wintypes.BOOL
+_user32.IsIconic.argtypes = [wintypes.HWND]
+_user32.IsIconic.restype  = wintypes.BOOL
+_user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.ShowWindow.restype  = wintypes.BOOL
+_user32.BringWindowToTop.argtypes = [wintypes.HWND]
+_user32.BringWindowToTop.restype  = wintypes.BOOL
+_user32.SetActiveWindow.argtypes = [wintypes.HWND]
+_user32.SetActiveWindow.restype  = wintypes.HWND
+_user32.SetFocus.argtypes = [wintypes.HWND]
+_user32.SetFocus.restype  = wintypes.HWND
+_user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+_user32.AttachThreadInput.restype  = wintypes.BOOL
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
+                                             ctypes.POINTER(wintypes.DWORD)]
+_user32.GetWindowThreadProcessId.restype  = wintypes.DWORD
+_user32.AllowSetForegroundWindow.argtypes = [wintypes.DWORD]
+_user32.AllowSetForegroundWindow.restype  = wintypes.BOOL
+_kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+ASFW_ANY = 0xFFFFFFFF  # AllowSetForegroundWindow(ASFW_ANY) blanket-permits
 
 # ---- 1. Hotkey ---------------------------------------------------------------
 MOD_ALT      = 0x0001
@@ -221,6 +261,9 @@ INPUT_KEYBOARD  = 1
 KEYEVENTF_KEYUP = 0x0002
 VK_CONTROL = 0x11
 VK_V       = 0x56
+VK_MENU    = 0x12  # Alt; used by the foreground-unlock trick
+
+SW_RESTORE = 9
 
 
 def get_foreground_window() -> int:
@@ -228,11 +271,122 @@ def get_foreground_window() -> int:
     return int(_user32.GetForegroundWindow() or 0)
 
 
-def paste_into_window(hwnd: int) -> None:
-    """Restore focus to hwnd (best-effort) and synthesize Ctrl+V."""
-    if hwnd and _user32.IsWindow(hwnd):
-        _user32.SetForegroundWindow(hwnd)
-        time.sleep(0.05)
+def _send_alt_tap() -> None:
+    """Synthesise a single Alt-down/Alt-up. Windows treats the calling
+    process as having received user input, which clears the
+    foreground-lock timeout and lets `SetForegroundWindow` actually
+    transfer focus on the next call. Documented workaround that
+    AutoHotkey, FancyZones, EarTrumpet, et al all use.
+
+    No app receives this as a "real" Alt press because we send it
+    while NO window has the foreground (we're between focus moves)."""
+    inputs = (_INPUT * 2)()
+    inputs[0].type = INPUT_KEYBOARD
+    inputs[0].u.ki = _KEYBDINPUT(VK_MENU, 0, 0, 0, None)
+    inputs[1].type = INPUT_KEYBOARD
+    inputs[1].u.ki = _KEYBDINPUT(VK_MENU, 0, KEYEVENTF_KEYUP, 0, None)
+    _user32.SendInput(2, ctypes.byref(inputs), ctypes.sizeof(_INPUT))
+
+
+def focus_window(hwnd: int, timeout_s: float = 1.0) -> bool:
+    """Bring `hwnd` to the foreground reliably and wait until it is.
+
+    Returns True when GetForegroundWindow() == hwnd within `timeout_s`.
+
+    The dance, in order:
+      1. If hwnd is minimised, ShowWindow(SW_RESTORE).
+      2. AllowSetForegroundWindow(ASFW_ANY) — opt our process out of
+         foreground-lock for the next SFW call.
+      3. AttachThreadInput(this_tid, fg_tid, TRUE) — share input queue
+         with the current foreground thread, which makes Windows treat
+         our SFW as if it came from the foreground process.
+      4. BringWindowToTop + SetForegroundWindow + SetActiveWindow +
+         SetFocus on hwnd.
+      5. Detach the input queue.
+      6. If verification still fails, send a phantom Alt tap (resets the
+         foreground-lock timeout) and retry steps 2-5 once.
+      7. Poll GetForegroundWindow() up to `timeout_s` seconds.
+
+    Returns False if hwnd is invalid or focus could not be transferred.
+    The caller can fall back to "paste into whatever is foreground now".
+    """
+    if not hwnd or not _user32.IsWindow(hwnd):
+        return False
+
+    if _user32.IsIconic(hwnd):
+        _user32.ShowWindow(hwnd, SW_RESTORE)
+
+    def _try_focus() -> bool:
+        _user32.AllowSetForegroundWindow(ASFW_ANY)
+        fg = _user32.GetForegroundWindow()
+        my_tid = _kernel32.GetCurrentThreadId()
+        fg_tid = _user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        attached = False
+        if fg_tid and fg_tid != my_tid:
+            attached = bool(_user32.AttachThreadInput(my_tid, fg_tid, True))
+        try:
+            _user32.BringWindowToTop(hwnd)
+            ok = bool(_user32.SetForegroundWindow(hwnd))
+            _user32.SetActiveWindow(hwnd)
+            _user32.SetFocus(hwnd)
+            return ok
+        finally:
+            if attached:
+                _user32.AttachThreadInput(my_tid, fg_tid, False)
+
+    if not _try_focus():
+        # Phantom Alt tap unlocks the foreground-lock timeout, then
+        # retry the dance once.
+        _send_alt_tap()
+        time.sleep(0.02)
+        _try_focus()
+
+    # Verify-loop. Most of the time focus is there within ~50 ms;
+    # window-manager animations on slow machines can push it to 500 ms+.
+    deadline = time.monotonic() + max(0.1, timeout_s)
+    while time.monotonic() < deadline:
+        if int(_user32.GetForegroundWindow() or 0) == hwnd:
+            return True
+        time.sleep(0.025)
+
+    logger.warning("focus_window(%#x) timed out; foreground is %#x.",
+                   hwnd, int(_user32.GetForegroundWindow() or 0))
+    return False
+
+
+def paste_into_window(hwnd: int, *, verify_focus: bool = True) -> bool:
+    """Bring `hwnd` to the foreground (if given) and synthesise Ctrl+V.
+
+    Returns True on success, False if focus could not be transferred or
+    the SendInput call only injected a partial event sequence. The text
+    is always already on the clipboard before this is called, so a
+    False return means "paste didn't land but the user can still hit
+    Ctrl+V manually".
+
+    `hwnd == 0` keeps the previous "paste into whatever is foreground
+    now" behaviour, used by AIM after agent_input.activate_target()
+    has already focused the right window.
+    """
+    if hwnd:
+        if not focus_window(hwnd, timeout_s=1.0):
+            logger.warning("paste_into_window: focus_window(%#x) failed; "
+                           "skipping paste. Text remains on the clipboard.",
+                           hwnd)
+            return False
+        # Tiny extra settle so Electron / Chromium input handlers
+        # actually accept the synthesised Ctrl+V (they debounce input
+        # events for ~50 ms after a focus change).
+        time.sleep(0.08)
+    elif verify_focus:
+        # AIM 'auto' path: at minimum confirm SOMETHING owns focus
+        # and it isn't our own popup. Otherwise the paste lands in our
+        # status window.
+        fg = int(_user32.GetForegroundWindow() or 0)
+        if not fg:
+            logger.warning("paste_into_window: no foreground window; "
+                           "skipping paste.")
+            return False
+
     inputs = (_INPUT * 4)()
     for i, (vkey, flags) in enumerate(((VK_CONTROL, 0), (VK_V, 0),
                                        (VK_V, KEYEVENTF_KEYUP),
@@ -242,6 +396,8 @@ def paste_into_window(hwnd: int) -> None:
     n = _user32.SendInput(4, ctypes.byref(inputs), ctypes.sizeof(_INPUT))
     if n != 4:
         logger.warning("SendInput injected %d/4 events.", n)
+        return False
+    return True
 
 
 # ---- 3. Auto-start at login --------------------------------------------------

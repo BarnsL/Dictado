@@ -1,9 +1,31 @@
-# Changelog
+﻿# Changelog
 
 This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.5.2] -- 2026-05-22
+
+One-click launchers, no code changes.
+
+### New
+
+- **`Dictado.cmd`, `Dictado.command`, `dictado.desktop`** at the repo
+  root. Double-click to start the daemon on Windows / macOS / Linux
+  respectively. The Windows launcher walks
+  `C:\Program Files\Python313/312/311/310` to pick a PSF-signed
+  `pythonw.exe`, then sets `PYTHONPATH` from a sibling `.venv` if one
+  is present, then hands off to `python -m dictado`. The macOS and
+  Linux equivalents do the same dance against their own conventions.
+- **README's "Install" section now leads with the double-click flow.**
+  The shell `dictado` / `python -m dictado` invocation stays as the
+  power-user fallback.
+
+### Notes
+
+- Pure packaging change. Nothing in `dictado/` was touched.
+- A real `.exe` / `.app` would weigh in north of 2 GB once Whisper +
+  PyTorch are frozen â€” the launchers are the right tool here.
 ## [0.5.1] -- 2026-05
 
 Benchmark refresh.
