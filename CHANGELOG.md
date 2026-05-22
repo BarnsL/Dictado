@@ -4,6 +4,37 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## v0.6.7 - 2026-05-21
+
+AIM regression fix: when the target app's chat-input `Name` drifts
+out from under our profile regex, the picker now falls back to rect
+heuristics instead of giving up.
+
+### What we caught
+
+An AIM target app shipped an update that changed its chat input's
+UIA `Name` property. The profile's `input_name_regex` stopped
+matching; `_pick_chat_input` returned `None` per the strict v0.6.4
+policy; the Ctrl+L fallback didn't move focus on this target.
+Recording succeeded end to end except the chat input itself stayed
+empty.
+
+### How we fixed it
+
+`_pick_chat_input` now does a two-phase selection:
+
+* Regex match first (preserves v0.6.4 precision when the Name still
+  matches).
+* Rect heuristics over the full focusable+enabled pool when the
+  regex matches zero candidates. Returns the smallest Edit near the
+  bottom of the window — the same logic v0.6.3 used.
+
+The cold-launch readiness check in `wait_for_chat_input` keeps the
+strict regex, so the original WebContents-Document race that
+motivated the strict policy stays closed there.
+
+INFO log line at the moment of fall-back records what happened.
+
 ## v0.6.6 - 2026-05-21
 
 Two follow-ups to v0.6.5: a heap-corruption crash and a baseline

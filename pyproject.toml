@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name        = "dictado"
-version = "0.6.6"
+version = "0.6.7"
 description = "Local push-to-talk voice-to-text daemon. Cross-platform. No cloud."
 readme      = "README.md"
 license     = { file = "LICENSE" }

@@ -262,23 +262,39 @@ def _pick_chat_input(edits: list[_UiaEdit],
     if not plausible:
         return None
 
-    # Profile-supplied name regex: hard-filter to elements whose
-    # `Name` property matches. AQ's chat input is named
-    # "Ask a question..."; ChatGPT desktop's is "Message ChatGPT" or
-    # similar. The regex eliminates ambiguity when the landing page
-    # has multiple focusable elements (suggested-action buttons,
-    # search boxes, etc.).
+    # Profile-supplied name regex: prefer-filter to elements whose
+    # `Name` property matches. AQ's chat input is/was named
+    # "Ask a question..."; ChatGPT desktop's is "Message ChatGPT".
+    # The regex disambiguates when a landing page has multiple
+    # focusable elements (suggested-action buttons, search boxes).
+    #
+    # v0.6.7: when zero candidates match the regex, FALL BACK to
+    # rect heuristics over the full plausible pool instead of
+    # returning None. The hard-fail was added in v0.6.4 to prevent
+    # the picker from latching onto the WebContents Document when
+    # the chat input wasn't ready yet. wait_for_chat_input still
+    # gates on regex-match for cold launches, so the WebContents
+    # Document race is closed there. Once we get to this picker
+    # call from focus_chat_input (mature window state), the rect
+    # heuristics are precise enough on their own.
+    #
+    # This regression bit Quick AI v0.647.0: the update apparently
+    # changed the chat input's UIA `Name` property (or set it to
+    # something that no longer starts with "Ask"). 48 candidates
+    # enumerated, none matched ^Ask, and we returned None.
+    name_filter_active = False
     if name_regex is not None:
         named = [e for e in plausible if e.name and name_regex.search(e.name)]
         if named:
             plausible = named
-        # If no element matches the regex, do NOT fall back to
-        # generic heuristics; return None so the caller can wait or
-        # fall back to Ctrl+L. Returning a generic match here is
-        # what caused the "wait_for_chat_input thought it succeeded
-        # but pasted on a button" regression.
+            name_filter_active = True
+            logger.debug("_pick_chat_input: regex matched %d/%d "
+                         "candidates by Name.", len(named),
+                         len(plausible))
         else:
-            return None
+            logger.info("_pick_chat_input: regex matched 0 candidates; "
+                        "falling back to rect heuristics over %d "
+                        "focusable elements.", len(plausible))
 
     # ---- A. Unique focusable Edit -> pick it without rect checks. -----
     edits_only = [e for e in plausible if e.control_type == UIA_CTRL_EDIT]

@@ -405,3 +405,64 @@ move things around between calls. Same lesson the foreground-lock
 docs hint at. Wrap discovery + the action that depends on the
 discovery into one entry point that holds the result long enough
 to act on it.
+
+
+---
+
+## Follow-up 5: target app update broke the regex-only picker
+
+**Discovered:** 2026-05-21 22:44:53. After the wake-cue lead-in
+fixes shipped, real wake-driven dictation against the AIM target
+app started failing at the paste step again.
+
+**Symptom (from `daemon.log`):**
+
+```
+[INFO] Transcribed (33 chars). autopaste=True aim=quick-ai
+[INFO] focus_chat_input(0x0031193C): 48 candidates but none passed the chat-input heuristic.
+[INFO] UIA could not focus a chat input under hwnd 0x0031193C; falling back to Ctrl+L.
+```
+
+The user's screenshot showed a title-bar banner: a fresh app
+update was ready to install. The target app's chat input's UIA
+`Name` property had drifted off the `^Ask` profile regex (most
+likely the new build switched the placeholder text or stopped
+exposing it as `Name` when the field is empty).
+
+48 candidates enumerated. None matched the regex. Picker returned
+None per the strict policy from Follow-up 4. Ctrl+L fallback fires;
+the target app doesn't honour it.
+
+**Root cause:** the strict-regex hard-fail introduced earlier was
+over-defensive. It was added to stop the picker from latching onto
+the WebContents Document during cold-launch window-readiness races.
+But it was applied at every later call site too, including
+`focus_chat_input` (warm-path; window already mature). Result: any
+Name-property drift in the target app breaks AIM completely with
+no graceful degradation.
+
+**Fix:** two-phase selector in `_pick_chat_input`:
+
+1. Try regex-filtered candidates first (preserves precision).
+2. If zero candidates match the regex, fall back to the rect
+   heuristics over the full focusable+enabled pool (small Edit at
+   the bottom of the window, etc.) — same behaviour we had before
+   the strict regex was added.
+
+`wait_for_chat_input` still gates cold-launches on regex-match, so
+the WebContents-Document race that motivated the strict regex
+stays closed there. Mature-state callers (the hotkey/wake path
+through `focus_chat_input`) get the resilience back.
+
+INFO log line at fall-back tells you what happened:
+
+```
+[INFO] _pick_chat_input: regex matched 0 candidates; falling back to
+       rect heuristics over 48 focusable elements.
+```
+
+**Lesson:** strict-fail policies that work for cold-launch state
+can break warm-state callers when the target app's accessibility
+tree drifts. Match policy to context: cold launch = strict (we're
+racing the loader), warm = best-effort (the window's mature, rect
+heuristics are precise enough).
