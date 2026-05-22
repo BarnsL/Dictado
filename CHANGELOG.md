@@ -4,6 +4,35 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.6.1] -- 2026-05-22
+
+Wake-event polish: startup sound, silence auto-stop, broader regex.
+
+### New
+
+- **Optional startup sound on wake activation.** Configure via
+  `wake_sound_path` + `wake_sound_volume`. Empty path = silent
+  cue. Any format your platform's audio decoder supports.
+- **Silence auto-stop** for wake-triggered recordings. Default
+  3 s of continuous silence ends the recording. Tunable via
+  `wake_silence_stop_s` and `wake_silence_rms_threshold`. Set
+  `wake_silence_stop_s` to 0 to disable. Hotkey-triggered
+  recordings keep their existing behaviour.
+- **Wake regex significantly broadened.** Added every
+  Whisper-transcription variant of Bijou / Biboo we've observed
+  ("Bee Boo", "Bibu", "peeboo", "big boo", "bee jew", "biggio",
+  ...). RMS gate lowered from 0.012 to 0.008 so quieter
+  utterances trigger.
+- **"No wake match" log lines now visible at INFO level** so
+  users debugging a missed phrase don't have to enable DEBUG to
+  see what Whisper actually transcribed.
+
+### Fixed
+
+- **Config file BOM handling.** `config.load()` now reads
+  `utf-8-sig`, so the daemon stops silently reverting to
+  defaults when the user edits `config.json` in Notepad or any
+  other tool that writes a UTF-8 BOM.
 ## [0.6.0] -- 2026-05-22
 
 The "no-hands" release.

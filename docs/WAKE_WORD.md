@@ -385,3 +385,123 @@ wake-word framework:
 The trade-off: ~140 MB RAM and ~5% CPU when actively listening,
 versus Porcupine's ~5 MB and 1% CPU. Worth it on dev laptops; tune
 the toggle off on long battery runs.
+
+---
+
+## Wake-event extras: startup sound + silence auto-stop
+
+When a recording is triggered by the wake-word listener (rather than
+the hotkey), two extra behaviours kick in:
+
+### 1. A startup sound plays at the moment the recording begins
+
+This gives you confirmation that the daemon heard the wake word
+before you start speaking. The bundled default is a short ASMR-style
+"hello" clip but you can swap it for any audio file you like.
+
+**Configure** in `config.json`:
+
+```json
+{
+  "wake_sound_path": "C:\\path\\to\\your\\sound.wav",
+  "wake_sound_volume": 0.7
+}
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `wake_sound_path` | empty (= no sound) | Absolute path. Empty disables the sound. Supported formats below. |
+| `wake_sound_volume` | `0.7` | 0.0 - 1.0. Only honoured for non-WAV formats; WAV plays at system volume. |
+
+**Supported formats by platform:**
+
+| Platform | Formats |
+|---|---|
+| Windows | `.wav` (winsound, lowest latency) and `.m4a` / `.mp3` / `.aac` / `.flac` / `.ogg` (Windows Media Foundation via PowerShell) |
+| macOS | Anything `afplay` supports — practically all common formats |
+| Linux | Anything `paplay` (PulseAudio) or `aplay` (ALSA) supports |
+
+**Latency notes:**
+
+- `.wav` on Windows: ~10 ms via `winsound.PlaySound(SND_ASYNC)`. The
+  recording stream opens in parallel, so the sound and the "I'm
+  listening" popup appear together.
+- Other formats on Windows: ~80 ms PowerShell startup. Still
+  imperceptible relative to the audio-capture warm-up.
+- macOS / Linux: depends on the system audio daemon; usually < 50 ms.
+
+**Recommendation:** keep your wake-confirmation sound short
+(< 1 second). A 2-3 second sound competes with the audio you're
+trying to record.
+
+**Example: change to a different file**
+
+If you want a different cue (a chime, a beep, a bird call):
+
+1. Drop your file somewhere stable (e.g.
+   `~/Documents/wake-cue.wav`).
+2. Edit `config.json` to point `wake_sound_path` at that file:
+
+   ```json
+   "wake_sound_path": "C:\\Users\\you\\Documents\\wake-cue.wav"
+   ```
+
+3. Restart the daemon (or just turn the wake toggle off/on).
+
+**Example: silence the cue entirely**
+
+Set `wake_sound_path` to an empty string:
+
+```json
+"wake_sound_path": ""
+```
+
+### 2. The recording auto-stops after sustained silence
+
+Hotkey-triggered recordings end when you press the hotkey again.
+Wake-triggered recordings additionally end after a configurable
+period of silence — useful because there's no easy way to "press the
+hotkey again" with your hands full.
+
+**Configure** in `config.json`:
+
+```json
+{
+  "wake_silence_stop_s": 3.0,
+  "wake_silence_rms_threshold": 0.010
+}
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `wake_silence_stop_s` | `3.0` | Seconds of continuous silence before the recording auto-stops. Set to `0` to disable (recording then runs to the normal max-record limit). |
+| `wake_silence_rms_threshold` | `0.010` | RMS below which a frame is considered "silent". Lower = more sensitive (auto-stops on quieter pauses); higher = less sensitive (auto-stops only on actual silence). |
+
+The recording loop tracks a `_last_voice_time` timestamp and checks
+the RMS of every captured frame. When `_last_voice_time` is more
+than `wake_silence_stop_s` seconds ago, the recording stops as if
+you had pressed the hotkey, and the normal transcription /
+clipboard / AIM-paste flow runs.
+
+**Tuning:**
+
+- If the recording cuts off mid-sentence during natural pauses,
+  raise `wake_silence_stop_s` to 4.0 or 5.0.
+- If it never auto-stops even when you've finished talking, raise
+  `wake_silence_rms_threshold` to 0.015 or 0.020 (your "silent"
+  ambient noise is louder than 0.010).
+- To disable the auto-stop entirely (back to "explicit hotkey or
+  the 60-second max-record cap"): set `wake_silence_stop_s` to 0.
+
+### Both extras only fire on wake-triggered recordings
+
+The hotkey path keeps its exact previous behaviour:
+
+- No startup sound on hotkey press.
+- No silence auto-stop on hotkey-triggered recordings.
+
+We track this via a module-level `_recording_was_wake_triggered`
+flag that the wake on_wake callback sets to True before spawning
+`start_recording()`. `stop_recording()` resets it. So if you press
+the hotkey within the same daemon run, the next recording behaves
+exactly like it always did.

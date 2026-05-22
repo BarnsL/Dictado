@@ -41,6 +41,22 @@ DEFAULTS = {
     # archive_dir = None means "use the OS-appropriate default"
     # (~/Documents/Sound Recordings on every platform).
     "archive_dir": None,
+    # ---- Wake-word listener ---------------------------------------
+    # See docs/WAKE_WORD.md for the full design + tuning guide.
+    "wake_word_enabled":  False,           # opt-in. Tray-menu toggle persists this.
+    "wake_word_phrases":  None,            # list[str] or None (= use default phrases)
+    # ---- Wake-event extras ----------------------------------------
+    # Sound played at the moment a wake-triggered recording begins.
+    # Empty string = no sound. Anything supported by your platform's
+    # audio decoder works (.wav, .m4a, .mp3, .flac, .ogg, ...).
+    "wake_sound_path":    "",
+    "wake_sound_volume":  0.7,             # 0.0 - 1.0 (non-WAV formats only)
+    # Wake-triggered recordings auto-stop after this many seconds of
+    # continuous silence. 0 = disable (run to MAX_RECORD_SECONDS).
+    "wake_silence_stop_s":         3.0,
+    # RMS below which a captured frame counts as "silent". Lower =
+    # stops on quieter pauses; higher = stops only on real silence.
+    "wake_silence_rms_threshold":  0.010,
 }
 
 # Convenience presets surfaced in the tray menu. The user can also pick
@@ -129,7 +145,12 @@ def load() -> dict:
     cfg = dict(DEFAULTS)
     p = config_path()
     try:
-        with p.open("r", encoding="utf-8") as f:
+        # utf-8-sig strips a BOM if the file has one. Notepad,
+        # PowerShell Set-Content -Encoding UTF8, and several
+        # editors write BOMs by default; without sig-mode the
+        # daemon silently fell back to defaults whenever the user
+        # touched the file in such a tool.
+        with p.open("r", encoding="utf-8-sig") as f:
             on_disk = json.load(f)
         m = on_disk.get("model")
         if isinstance(m, str):
@@ -158,6 +179,28 @@ def load() -> dict:
         ai = on_disk.get("agent_input")
         if isinstance(ai, str) and ai:
             cfg["agent_input"] = ai
+        # ---- Wake-word listener ----
+        wwe = on_disk.get("wake_word_enabled")
+        if isinstance(wwe, bool):
+            cfg["wake_word_enabled"] = wwe
+        wwp = on_disk.get("wake_word_phrases")
+        if (wwp is None
+            or (isinstance(wwp, list)
+                and all(isinstance(x, str) for x in wwp))):
+            cfg["wake_word_phrases"] = wwp
+        # ---- Wake-event extras ----
+        wsp = on_disk.get("wake_sound_path")
+        if isinstance(wsp, str):
+            cfg["wake_sound_path"] = wsp
+        wsv = on_disk.get("wake_sound_volume")
+        if isinstance(wsv, (int, float)) and 0.0 <= wsv <= 1.0:
+            cfg["wake_sound_volume"] = float(wsv)
+        wss = on_disk.get("wake_silence_stop_s")
+        if isinstance(wss, (int, float)) and 0.0 <= wss <= 60.0:
+            cfg["wake_silence_stop_s"] = float(wss)
+        wsr = on_disk.get("wake_silence_rms_threshold")
+        if isinstance(wsr, (int, float)) and 0.0 <= wsr <= 1.0:
+            cfg["wake_silence_rms_threshold"] = float(wsr)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     save(cfg)

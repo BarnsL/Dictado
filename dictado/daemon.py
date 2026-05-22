@@ -70,6 +70,11 @@ from . import wake_word as _wake
 # the feature from the tray menu. None when wake-word is OFF.
 wake_detector = None  # type: _wake.WakeWordDetector | None
 wake_word_enabled = False
+# True iff the current/most-recent recording was triggered
+# by the wake-word listener rather than the hotkey or tray.
+# Read by start_recording / the recorder thread to decide
+# whether to play the wake sound and enable silence auto-stop.
+_recording_was_wake_triggered = False
 from . import models as _models
 
 _plat = _platform_adapter()
@@ -224,6 +229,99 @@ def _update_icon_tooltip() -> None:
 def _update_tray_icon(color: str) -> None:
     if icon is not None:
         icon.icon = _create_icon_image(color)
+
+
+def _play_wake_sound() -> None:
+    """Play the configured wake-startup sound.
+
+    Honours config keys:
+      - wake_sound_path: absolute path to a .wav / .m4a / .mp3 file.
+        Empty / missing => no sound.
+      - wake_sound_volume: 0.0 - 1.0 (only honoured for the WMF
+        path; winsound has no per-call volume control).
+
+    Runs synchronously on the calling thread; the file must be short
+    (< 1 s recommended) or the user perceives a delay before the
+    record stream opens. Wraps everything in try/except so a missing
+    or corrupted file never crashes start_recording.
+    """
+    try:
+        cfg = _cfg.load()
+    except Exception:
+        return
+    path = (cfg.get("wake_sound_path") or "").strip()
+    if not path:
+        return
+    if not os.path.exists(path):
+        logger.warning("wake_sound_path %r does not exist; skipping.", path)
+        return
+    try:
+        volume = float(cfg.get("wake_sound_volume", 0.7))
+    except (TypeError, ValueError):
+        volume = 0.7
+    volume = max(0.0, min(1.0, volume))
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".wav" and sys.platform == "win32":
+            # winsound is the cheapest path: zero-deps, ~10 ms latency.
+            # SND_ASYNC means we don't block. SND_FILENAME tells it path,
+            # not registry alias. SND_NOSTOP means a previous play
+            # doesn't get clobbered (rare with our 1-shot calls).
+            import winsound
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            return
+        if sys.platform == "win32":
+            # Non-WAV (m4a / mp3 / aac / ogg / flac): hand off to
+            # Windows Media Foundation via PowerShell. This is more
+            # expensive (~80 ms PowerShell startup) but works for any
+            # codec WMF supports -- including .m4a which winsound
+            # does NOT handle.
+            import subprocess
+            ps_cmd = (
+                f"Add-Type -AssemblyName presentationCore;"
+                f"$p=New-Object System.Windows.Media.MediaPlayer;"
+                f"$p.Open([System.Uri]::new('{path}'));"
+                f"$p.Volume={volume};"
+                f"$p.Play();"
+                # Keep PowerShell alive long enough for the player to
+                # actually start; otherwise the process exits before
+                # MediaPlayer queues the audio. 1.5 s is plenty for
+                # short notification sounds (< 1 s) and adds nothing
+                # perceptible to the recording-start latency because
+                # it's running detached.
+                f"Start-Sleep -Milliseconds 1500"
+            )
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive",
+                 "-Command", ps_cmd],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        # macOS: use afplay (always available).
+        if sys.platform == "darwin":
+            import subprocess
+            subprocess.Popen(["afplay", "-v", str(volume), path],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return
+        # Linux: paplay (PulseAudio) -> aplay (ALSA) fallback.
+        if sys.platform.startswith("linux"):
+            import subprocess
+            for cmd in (["paplay", "--volume",
+                         str(int(volume * 65536)), path],
+                        ["aplay", "-q", path]):
+                try:
+                    subprocess.Popen(cmd,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                    return
+                except FileNotFoundError:
+                    continue
+            logger.info("No paplay/aplay found; skipping wake sound.")
+    except Exception:
+        logger.exception("wake-sound playback raised; skipping.")
 
 
 # ─── Live popup window (tkinter) ──────────────────────────────────────────────
@@ -409,6 +507,13 @@ def start_recording() -> None:
     if wake_detector is not None:
         try: wake_detector.pause()
         except Exception: logger.exception("wake_detector.pause raised.")
+
+    # Wake-event extras (sound + silence auto-stop). Both are gated on
+    # _recording_was_wake_triggered so the hotkey path keeps its
+    # exact previous behaviour.
+    wake_triggered = _recording_was_wake_triggered
+    if wake_triggered:
+        _play_wake_sound()
         recording = True
         audio_frames = []
         _last_partial_frame_count = 0
@@ -435,6 +540,39 @@ def start_recording() -> None:
                     logger.warning("Max record time reached; auto-stopping.")
                     threading.Thread(target=stop_recording, daemon=True).start()
                     break
+
+                # Wake-trigger silence auto-stop. Only enabled when this
+                # recording was started by the wake-word listener; the
+                # hotkey path keeps its old "stop only when the user
+                # toggles" behaviour. Threshold reads from config so the
+                # user can tune or disable (set to 0 to disable).
+                if wake_triggered:
+                    try:
+                        cfg_now = _cfg.load()
+                        silence_stop_s = float(
+                            cfg_now.get("wake_silence_stop_s", 3.0))
+                        silence_rms = float(
+                            cfg_now.get("wake_silence_rms_threshold", 0.010))
+                    except Exception:
+                        silence_stop_s, silence_rms = 3.0, 0.010
+                    if silence_stop_s > 0:
+                        # Compute RMS over the most recent frame.
+                        if len(audio_frames) > 0:
+                            tail = audio_frames[-1]
+                            arr = (np.frombuffer(tail, dtype=np.int16)
+                                     .astype(np.float32) / 32768.0)
+                            rms_now = float(np.sqrt(np.mean(arr * arr))) \
+                                if arr.size else 0.0
+                            if rms_now >= silence_rms:
+                                _last_voice_time = time.time()
+                            elif (time.time() - _last_voice_time
+                                  >= silence_stop_s):
+                                logger.info(
+                                    "Wake-recording: %.1fs silence; "
+                                    "auto-stopping.", silence_stop_s)
+                                threading.Thread(target=stop_recording,
+                                                 daemon=True).start()
+                                break
                 try:
                     audio_frames.append(_stream.read(CHUNK,
                                                      exception_on_overflow=False))
@@ -602,6 +740,10 @@ def stop_recording() -> None:
     if wake_detector is not None:
         try: wake_detector.resume()
         except Exception: logger.exception("wake_detector.resume raised.")
+    # Reset the wake-trigger flag so the next recording's source is
+    # accurately classified.
+    global _recording_was_wake_triggered
+    _recording_was_wake_triggered = False
 
 
 def toggle_recording() -> None:
@@ -744,10 +886,13 @@ def _build_aim_submenu() -> Menu:
 
 def _on_wake_phrase_detected(matched_text: str) -> None:
     """Called by the wake_word detector thread when a phrase fires.
-    Hands off to start_recording() on a fresh thread so the listener
-    can release before pause() takes effect inside start_recording."""
+    Sets _recording_was_wake_triggered so start_recording knows to
+    play the wake sound and arm the silence auto-stop, then hands
+    off to start_recording() on a fresh thread."""
+    global _recording_was_wake_triggered
     logger.info("Wake-word triggered start_recording (matched: %r).",
                 matched_text)
+    _recording_was_wake_triggered = True
     threading.Thread(target=start_recording, daemon=True,
                      name="wake-start").start()
 

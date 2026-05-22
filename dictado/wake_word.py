@@ -192,13 +192,17 @@ _WAKE_PREFIX = (
 # case-insensitive at the call site so we don't bother with [Bb] etc.
 _BIJOU = (
     r"(?:"
-    r"bi[jzg](?:ou|u|oux)|"           # bijou, bijoux, bizu, bidu, bigeo
-    r"bee[\s\-]*j(?:oo|ew|u|ou)|"     # beejoo, bee-jew, bee-joo
-    r"be[\s\-]*j(?:oo|ew|u|ou)|"      # bejoo, be-jew
-    r"bay[ou]+|bay[\s\-]*[zj][ou]+|"  # bayou, bay-zhou
-    r"bee[\s\-]*zhou|"                # bee zhou
-    r"biggio|"                        # transcription variant
-    r"beg(?:u|oo|ew)"                 # begu, begoo
+    # Direct spellings:
+    r"bijou|bijoux|biggio|bidu|bizu|bigeo|"
+    # 'bee + j-/zh-' variants (most common Whisper output):
+    r"bee[\s\-]*(?:j|zh|g)(?:oo|ew|u|ou|o)|"   # bee-joo, bee zhou, beegoo, bee jew
+    r"be[\s\-]*(?:j|zh|g)(?:oo|ew|u|ou|o)|"    # be-joo, be jew
+    r"b(?:ay|ai)[\s\-]*(?:j|zh)?[ou]+|"        # bayou, bay-zhou, baizou
+    # Fall-back syllable-split forms:
+    r"begu|begoo|begew|"
+    r"big[\s\-]*(?:joo|jew|zhou|jou|you)|"     # big joo, big-zhou
+    r"beat[\s\-]*joo|beat[\s\-]*you|"        # beat joo (Whisper splits "bee" -> "beat")
+    r"b[\s\-]*joo"                             # bare 'b joo'
     r")"
 )
 
@@ -208,13 +212,19 @@ _BIJOU = (
 #   peeboo (rare false positive), bee-bu, beba
 _BIBOO = (
     r"(?:"
-    r"bi[\s\-]*boo|"                  # bi boo, biboo, bi-boo
-    r"bee[\s\-]*boo|"                 # bee-boo, bee boo, beeboo
-    r"be[\s\-]*boo|"                  # be-boo, beboo
-    r"bibou|"                         # bibou
-    r"bib(?:u|oo)|"                   # bibu
-    r"beb(?:u|oo|a)|"                 # bebu, beboo, beba
-    r"peeboo"                         # rare false positive on aspirated 'b'
+    # Direct spellings:
+    r"biboo|bibou|bibu|bib|"
+    # 'bee + b' variants (most common Whisper output: 'Bee Boo'):
+    r"bee[\s\-]*b(?:oo|ou|u|o)|"               # bee boo, bee-boo, bee bu
+    r"be[\s\-]*b(?:oo|ou|u|o)|"                # be boo, be-boo
+    r"bi[\s\-]*b(?:oo|ou|u|o)|"                # bi boo, bi-boo
+    # Whisper drops the 'b' in 'biboo' on noisy windows -> 'bee oo'.
+    # We don't want to match that bare; it's too generic.
+    r"beb(?:u|oo|a|ou)|"                       # bebu, beboo, beba, bebou
+    r"peeboo|peabo|peabu|"                     # aspirated 'b' false-recognitions
+    r"big[\s\-]*boo|"                          # 'big boo' false-recognition
+    # Whisper sometimes attaches the prefix word to the name:
+    r"hey[\s\-]*boo|ok[\s\-]*boo|yo[\s\-]*boo"
     r")"
 )
 
@@ -304,7 +314,7 @@ INFER_INTERVAL_SECONDS = 0.5
 # threshold is calibrated to "a person speaking quietly across the
 # room from a laptop mic". Increase if you get false-positive triggers
 # from background noise.
-RMS_THRESHOLD = 0.012
+RMS_THRESHOLD = 0.008
 _GATE_WINDOW_SECONDS = 0.5
 
 # Whisper hallucination filter: if the model's no_speech_prob exceeds
@@ -607,4 +617,4 @@ class WakeWordDetector:
                 except Exception:
                     logger.exception("on_wake callback raised.")
             else:
-                logger.debug("No wake match in: %r", text)
+                logger.info("No wake match in: %r (rms=%.3f, max_no_speech=%.2f)", text, window_rms, max_no_speech)

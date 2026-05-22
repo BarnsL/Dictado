@@ -228,6 +228,27 @@ The full design — architecture diagram, tuning knobs, troubleshooting,
 how to add a new wake name — lives at
 [`docs/WAKE_WORD.md`](docs/WAKE_WORD.md).
 
+
+**Optional startup sound + silence auto-stop.** When the listener
+triggers a recording (not the hotkey), you can have a short audio
+cue play at the moment the mic opens, and the recording will
+auto-stop after a configurable period of silence. Both opt-in via
+`config.json`:
+
+```json
+{
+  "wake_sound_path":            "C:\\Users\\you\\Documents\\beep.wav",
+  "wake_sound_volume":          0.7,
+  "wake_silence_stop_s":        3.0,
+  "wake_silence_rms_threshold": 0.010
+}
+```
+
+Empty `wake_sound_path` = no sound. Set `wake_silence_stop_s` to
+0 to disable the auto-stop. Tuning details and supported file
+formats per platform live in [`docs/WAKE_WORD.md`](docs/WAKE_WORD.md)
+under "Wake-event extras".
+
 ---
 
 ## Models
