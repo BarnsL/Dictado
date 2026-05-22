@@ -463,17 +463,36 @@ def wait_for_chat_input(hwnd: int, *,
     return False
 
 
-def _click_element_rect(rect: tuple[int, int, int, int]) -> bool:
-    """Synthesize a left mouse-down/up at the rect's screen-space
-    center. Returns True if the click was issued (does not verify
-    that anything received it).
+def _click_window_chat_zone(hwnd: int) -> bool:
+    """Click at where Chromium AI apps put their chat input: ~75-80%
+    from the top, centered horizontally. Used when UIA can't find
+    a real chat-input element (the WebContents Document covers the
+    whole window and is the only thing UIA sees -- a sign the inner
+    accessibility tree isn't exposed).
 
-    This is the SetFocus-failed fallback for Chromium-based
-    targets. UIA SetFocus on Chromium controls can get swallowed
-    by the accessibility bridge before reaching DOM focus; a real
-    mouse click propagates through Chromium's input pipeline and
-    sets DOM focus reliably. ~30 ms end-to-end including the cursor
-    save/restore.
+    Empirically true for: Quick AI, ChatGPT desktop, Claude desktop,
+    Cursor, Copilot, Perplexity desktop. The chat input sits about
+    one input-bar-height above the bottom of the window, centered.
+    """
+    rect = _window_client_rect(hwnd)
+    if rect is None:
+        return False
+    l, t, r, b = rect
+    if r <= l or b <= t:
+        return False
+    cx = (l + r) // 2
+    # Aim ~80% from the top -- the chat input bar's vertical center
+    # in standard layouts (the input is in the bottom ~15% of the
+    # window; 80% lands squarely in it without hitting the
+    # "Send" / "Voice" buttons on the right or the "+" attachment
+    # button on the left).
+    cy = t + int((b - t) * 0.80)
+    return _click_at(cx, cy)
+
+
+def _click_at(cx: int, cy: int) -> bool:
+    """SetCursorPos + LEFTDOWN/LEFTUP at (cx, cy). Saves and restores
+    the cursor so the user doesn't see a persistent jump.
     """
     try:
         import ctypes
@@ -481,22 +500,9 @@ def _click_element_rect(rect: tuple[int, int, int, int]) -> bool:
     except Exception:
         return False
     user32 = ctypes.WinDLL("user32", use_last_error=True)
-
-    l, t, r, b = rect
-    if r <= l or b <= t:
-        return False
-    cx = (l + r) // 2
-    cy = (t + b) // 2
-
-    # Save cursor so we can restore it after the click. Some users
-    # have very specific cursor positioning (e.g. on a tiling WM
-    # this can clobber a window-management gesture).
     pt = wintypes.POINT()
     if not user32.GetCursorPos(ctypes.byref(pt)):
         pt.x, pt.y = cx, cy
-
-    # SetCursorPos -> mouse_event(LEFTDOWN) -> brief sleep ->
-    # mouse_event(LEFTUP) -> SetCursorPos to original.
     MOUSEEVENTF_LEFTDOWN = 0x0002
     MOUSEEVENTF_LEFTUP   = 0x0004
     try:
@@ -512,6 +518,26 @@ def _click_element_rect(rect: tuple[int, int, int, int]) -> bool:
         except Exception:
             pass
     return True
+
+
+def _click_element_rect(rect: tuple[int, int, int, int]) -> bool:
+    """Synthesize a left mouse-down/up at the rect's screen-space
+    center. Returns True if the click was issued (does not verify
+    that anything received it).
+
+    This is the SetFocus-failed fallback for Chromium-based
+    targets. UIA SetFocus on Chromium controls can get swallowed
+    by the accessibility bridge before reaching DOM focus; a real
+    mouse click propagates through Chromium's input pipeline and
+    sets DOM focus reliably. ~30 ms end-to-end including the cursor
+    save/restore.
+    """
+    l, t, r, b = rect
+    if r <= l or b <= t:
+        return False
+    cx = (l + r) // 2
+    cy = (t + b) // 2
+    return _click_at(cx, cy)
 
 
 def focus_chat_input(hwnd: int, *,
@@ -555,12 +581,45 @@ def focus_chat_input(hwnd: int, *,
     if target is None:
         logger.info("focus_chat_input(0x%08X): %d candidates but none "
                     "passed the chat-input heuristic.", hwnd, len(edits))
+        # Last-resort: click at the window's standard chat-input zone.
+        # Used when UIA enumerated zero plausible inputs at all.
+        if _click_window_chat_zone(hwnd):
+            logger.info("focus_chat_input(0x%08X): no candidates; clicked "
+                        "window chat-zone as last resort.", hwnd)
+            return True
         return False
 
     logger.debug("focus_chat_input(0x%08X): target name=%r aid=%r "
                  "ctype=%d rect=%s area=%.0f",
                  hwnd, target.name, target.automation_id,
                  target.control_type, target.rect, target.area)
+
+    # Document-shaped target detection. When the only "focusable" element
+    # UIA reports is the WebContents Document (covers >50% of window),
+    # SetFocus on it APPEARS to succeed (CompareElements matches: it's
+    # the same element we just SetFocus'd) but Ctrl+V then fires at
+    # nothing useful because the inner DOM focus engine never received
+    # an input notification. Skip SetFocus entirely; click the standard
+    # chat-input zone of the window. This is the v0.6.9 fix for the
+    # 22:57:50 regression where SetFocus appeared to succeed but no
+    # text landed.
+    win_rect = _window_client_rect(hwnd)
+    is_document_shaped = False
+    if win_rect is not None:
+        wl, wt, wr, wb = win_rect
+        win_area = max(1.0, abs(wr - wl) * abs(wb - wt))
+        target_area = _abs_area(target)
+        if target_area / win_area > 0.50:
+            is_document_shaped = True
+
+    if is_document_shaped or target.control_type == UIA_CTRL_DOCUMENT:
+        logger.info("focus_chat_input(0x%08X): target is Document-shaped "
+                    "(rect=%s, ctype=%d); UIA SetFocus would no-op. "
+                    "Clicking window chat-zone directly.",
+                    hwnd, target.rect, target.control_type)
+        if _click_window_chat_zone(hwnd):
+            return True
+        return False
 
     try:
         target.element.SetFocus()

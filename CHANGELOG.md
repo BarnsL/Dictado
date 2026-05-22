@@ -4,6 +4,36 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## v0.6.9 - 2026-05-21
+
+Geometry-based click when UIA's tree collapses to a single Document.
+
+### Symptom
+
+After the v0.6.8 click-fallback shipped, paste continued to fail
+silently against some Chromium AI apps. Picker returned 1 element,
+SetFocus succeeded by UIA's metric, focus_chat_input returned True,
+but the chat input stayed empty.
+
+### Root cause
+
+The only focusable element UIA could see was the WebContents
+Document covering the whole window. SetFocus on a Document
+"succeeds" because `CompareElements` matches the same element we
+just focused — but Ctrl+V is routed to nothing useful because the
+Document isn't an input element.
+
+### Fix
+
+Detect Document-shaped targets early (control type Document OR
+rect covers >50% of the window) and bypass UIA entirely. Click at
+the window's standard chat-input zone — about 80% from the top,
+centered horizontally. Reliably hits the input bar across every
+Chromium AI app tested.
+
+Also added: zero-candidates last-resort clicks the same zone
+instead of just returning False.
+
 ## v0.6.8 - 2026-05-21
 
 Click fallback when UIA SetFocus is swallowed by the Chromium

@@ -517,3 +517,75 @@ UIA `SetFocus` is a heuristic against Chromium-based apps. It
 works when the bridge is in a cooperative state; when it doesn't,
 there's no error, no exception, just silent no-op. The verify-loop
 catches it. The click fallback closes the loop.
+
+
+---
+
+## Follow-up 7: SetFocus appears to succeed on the WebContents Document
+
+**Discovered:** 2026-05-21 22:57:50. After v0.6.8's click-fallback
+shipped, the recording at 22:57:30 produced this trace:
+
+```
+[INFO] _pick_chat_input: regex matched 0 candidates; falling back to
+       rect heuristics over 1 focusable elements.
+(no SetFocus warning)
+(no click-fallback message)
+[INFO] Rating: ... -- rated 4/10
+```
+
+The picker returned 1 focusable element, SetFocus on it APPEARED
+to succeed (no warning logged), focus_chat_input returned True,
+but the chat input stayed empty.
+
+**Root cause:** the only focusable thing UIA enumerated was the
+WebContents Document (the giant scroll host that covers the whole
+window). Its `Name` doesn't start with `^Ask`, so the regex
+returned zero matches. The rect-fallback then found this one
+Document, picked it, and SetFocus'd on it. SetFocus on a Document
+"works" by UIA's metric (CompareElements matches: same element we
+just focused) but Ctrl+V is then routed to nothing useful because
+the inner DOM focus engine never received an input notification.
+
+The v0.6.8 click-fallback only fires when SetFocus's verify-loop
+expires. SetFocus on the Document didn't expire; it appeared to
+succeed. So the fallback never ran.
+
+### Fix shipped in v0.6.9
+
+When the picker returns a Document-shaped target (control type =
+Document, OR rect covers >50% of the window area), skip SetFocus
+entirely and click at the window's standard chat-input zone (~80%
+from the top, centered horizontally — empirically where AQ /
+ChatGPT desktop / Claude / Cursor put their input bar).
+
+A "Document-shaped target" is the diagnostic signal that the inner
+accessibility tree isn't being exposed to UIA at all. There's no
+real Edit to focus; the geometry of the standard layout is the
+only signal we have.
+
+INFO log at the new code path:
+
+```
+[INFO] focus_chat_input(0x..): target is Document-shaped (rect=...,
+       ctype=50030); UIA SetFocus would no-op. Clicking window chat-
+       zone directly.
+```
+
+Also added: zero-candidates fallback. When UIA returns no Edits or
+Documents at all (Chromium tree fully collapsed), click the chat
+zone as a last resort instead of returning False.
+
+### Lesson
+
+`SetFocus succeeded` and `the focused element matches the target`
+are not the same as `the input element is in keyboard-input
+receive state`. UIA's `CompareElements` only verifies UIA-side
+identity. When the target is a non-input element (Document /
+Pane / Group), the focus comparison passes but the underlying
+input pipeline routes Ctrl+V to nothing.
+
+Geometry-based clicks bypass UIA entirely and propagate through
+Chromium's input pipeline as real OS input events. They're less
+precise than UIA SetFocus when UIA is healthy, but more reliable
+when UIA's tree is collapsed or Document-only.
