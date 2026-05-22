@@ -75,6 +75,16 @@ wake_word_enabled = False
 # Read by start_recording / the recorder thread to decide
 # whether to play the wake sound and enable silence auto-stop.
 _recording_was_wake_triggered = False
+
+# Silence-detection ratio for wake-triggered
+# recordings. Effective threshold is the larger of
+# `wake_silence_rms_threshold` (config) and
+# `voice_baseline_rms * WAKE_SILENCE_RATIO`. The
+# voice baseline is sampled from the first 1.0 s
+# of the recording (the user just said the wake
+# phrase, so it captures their actual speaking
+# volume on this mic in this room).
+WAKE_SILENCE_RATIO = 0.35
 from . import models as _models
 
 _plat = _platform_adapter()
@@ -277,19 +287,53 @@ def _play_wake_sound() -> None:
             # codec WMF supports -- including .m4a which winsound
             # does NOT handle.
             import subprocess
+            # Why this PS shim is the way it is:
+            #
+            #   1. winsound only handles WAV. Anything else (m4a, mp3,
+            #      aac, flac, ogg) needs Windows Media Foundation,
+            #      which Python doesn't expose directly. PowerShell
+            #      gives us cheap WMF access via
+            #      System.Windows.Media.MediaPlayer.
+            #
+            #   2. MediaPlayer.Open() is asynchronous. We can't just
+            #      Play() and exit -- the spawned PS process would
+            #      die before MediaPlayer finishes buffering and the
+            #      audio would never play.
+            #
+            #   3. MediaPlayer.NaturalDuration is the file's real
+            #      length (HH:MM:SS) once HasAudio = $true. We sleep
+            #      for that duration + 200 ms (audio-buffer flush
+            #      margin), capped at 8 s. Previous versions hard-
+            #      coded a 1.5 s sleep, which truncated any clip
+            #      longer than 1.5 s -- the user's 2.0 s
+            #      biboo-asmr-hello.m4a was being cut off at ~75%.
+            #
+            #   4. Wrapping in try/finally + $p.Close() releases the
+            #      WMF media handle cleanly so the file isn't held
+            #      open if the user later edits it.
             ps_cmd = (
                 f"Add-Type -AssemblyName presentationCore;"
                 f"$p=New-Object System.Windows.Media.MediaPlayer;"
-                f"$p.Open([System.Uri]::new('{path}'));"
                 f"$p.Volume={volume};"
+                f"$p.Open([System.Uri]::new('{path}'));"
+                # Wait up to 2 s for the async Open to populate
+                # NaturalDuration. HasAudio flips True when the
+                # decoder has confirmed the file actually contains
+                # audio.
+                f"$ready=$false;"
+                f"for ($i=0; $i -lt 40; $i++) {{"
+                f"  if ($p.NaturalDuration.HasTimeSpan) {{ $ready=$true; break }}"
+                f"  Start-Sleep -Milliseconds 50"
+                f"}};"
+                # Compute total milliseconds: real duration + 200 ms
+                # buffer-flush margin, capped at 8 s. Falls back to
+                # 3000 ms if NaturalDuration was never resolved.
+                f"$ms = if ($ready) {{"
+                f"  [Math]::Min(8000, [int]$p.NaturalDuration.TimeSpan.TotalMilliseconds + 200)"
+                f"}} else {{ 3000 }};"
                 f"$p.Play();"
-                # Keep PowerShell alive long enough for the player to
-                # actually start; otherwise the process exits before
-                # MediaPlayer queues the audio. 1.5 s is plenty for
-                # short notification sounds (< 1 s) and adds nothing
-                # perceptible to the recording-start latency because
-                # it's running detached.
-                f"Start-Sleep -Milliseconds 1500"
+                f"try {{ Start-Sleep -Milliseconds $ms }}"
+                f"finally {{ $p.Stop(); $p.Close() }}"
             )
             subprocess.Popen(
                 ["powershell", "-NoProfile", "-NonInteractive",
@@ -534,6 +578,13 @@ def start_recording() -> None:
     def _record_loop(_pa, _stream):
         global recording
         start_time = time.time()
+        # Wake-trigger silence-auto-stop state. These are initialised
+        # for every recording (wake or hotkey); the silence block
+        # below only reads them when wake_triggered is True so the
+        # hotkey path is unaffected.
+        _last_voice_time = start_time
+        _last_silence_log = 0.0
+        _wake_voice_baseline_rms = 0.0
         try:
             while recording:
                 if time.time() - start_time > MAX_RECORD_SECONDS:
@@ -544,32 +595,99 @@ def start_recording() -> None:
                 # Wake-trigger silence auto-stop. Only enabled when this
                 # recording was started by the wake-word listener; the
                 # hotkey path keeps its old "stop only when the user
-                # toggles" behaviour. Threshold reads from config so the
-                # user can tune or disable (set to 0 to disable).
+                # toggles" behaviour.
+                #
+                # Why this is more involved than just "RMS < threshold
+                # for N seconds":
+                #
+                #   1. Static defaults are wrong for most rooms. Empirically
+                #      the user's ambient floor was 0.03-0.05 RMS while the
+                #      static default was 0.010 -- so during "silent"
+                #      pauses every chunk's RMS still exceeded the
+                #      threshold and the recording never auto-stopped.
+                #
+                #   2. Adaptive baseline: we sample the first 1.0 s of the
+                #      recording as a voice-volume baseline. The user just
+                #      said the wake phrase, so that 1 s captures their
+                #      actual speaking volume. Silence threshold becomes
+                #      max(static_threshold, baseline * SILENCE_RATIO),
+                #      auto-tuning to mic gain + room noise.
+                #
+                #   3. We log a "silence countdown" line every ~1 s at
+                #      INFO level so the user can watch the auto-stop
+                #      progress in daemon.log without enabling DEBUG.
                 if wake_triggered:
                     try:
                         cfg_now = _cfg.load()
                         silence_stop_s = float(
                             cfg_now.get("wake_silence_stop_s", 3.0))
-                        silence_rms = float(
-                            cfg_now.get("wake_silence_rms_threshold", 0.010))
+                        silence_rms_floor = float(
+                            cfg_now.get("wake_silence_rms_threshold",
+                                        0.030))
                     except Exception:
-                        silence_stop_s, silence_rms = 3.0, 0.010
-                    if silence_stop_s > 0:
-                        # Compute RMS over the most recent frame.
-                        if len(audio_frames) > 0:
-                            tail = audio_frames[-1]
-                            arr = (np.frombuffer(tail, dtype=np.int16)
-                                     .astype(np.float32) / 32768.0)
-                            rms_now = float(np.sqrt(np.mean(arr * arr))) \
-                                if arr.size else 0.0
-                            if rms_now >= silence_rms:
-                                _last_voice_time = time.time()
-                            elif (time.time() - _last_voice_time
-                                  >= silence_stop_s):
+                        silence_stop_s, silence_rms_floor = 3.0, 0.030
+
+                    if silence_stop_s > 0 and len(audio_frames) > 0:
+                        tail = audio_frames[-1]
+                        arr = (np.frombuffer(tail, dtype=np.int16)
+                                 .astype(np.float32) / 32768.0)
+                        rms_now = (float(np.sqrt(np.mean(arr * arr)))
+                                   if arr.size else 0.0)
+
+                        # Build the voice-volume baseline once we have
+                        # ~1 s of audio. SAMPLE_RATE / CHUNK = chunks
+                        # per second.
+                        chunks_for_baseline = max(1, SAMPLE_RATE // CHUNK)
+                        if (_wake_voice_baseline_rms == 0.0
+                                and len(audio_frames) >= chunks_for_baseline):
+                            sample = audio_frames[:chunks_for_baseline]
+                            sample_arr = (np.frombuffer(b"".join(sample),
+                                            dtype=np.int16)
+                                            .astype(np.float32) / 32768.0)
+                            if sample_arr.size:
+                                _wake_voice_baseline_rms = float(
+                                    np.sqrt(np.mean(sample_arr * sample_arr)))
                                 logger.info(
-                                    "Wake-recording: %.1fs silence; "
-                                    "auto-stopping.", silence_stop_s)
+                                    "wake-stop: voice baseline rms=%.3f "
+                                    "(threshold floor=%.3f, ratio=%.2f -> "
+                                    "effective threshold=%.3f)",
+                                    _wake_voice_baseline_rms,
+                                    silence_rms_floor,
+                                    WAKE_SILENCE_RATIO,
+                                    max(silence_rms_floor,
+                                        _wake_voice_baseline_rms
+                                        * WAKE_SILENCE_RATIO))
+
+                        # Pick the larger of the static floor and the
+                        # baseline-relative threshold. If baseline isn't
+                        # ready yet, just use the floor.
+                        if _wake_voice_baseline_rms > 0.0:
+                            effective_thresh = max(
+                                silence_rms_floor,
+                                _wake_voice_baseline_rms * WAKE_SILENCE_RATIO)
+                        else:
+                            effective_thresh = silence_rms_floor
+
+                        if rms_now >= effective_thresh:
+                            _last_voice_time = time.time()
+                        else:
+                            silent_for = time.time() - _last_voice_time
+                            # Periodic INFO heartbeat so the log shows
+                            # the countdown progressing. Rate-limited
+                            # to once per second to avoid spam.
+                            if (time.time() - _last_silence_log
+                                    >= 1.0):
+                                logger.info(
+                                    "wake-stop: silent for %.1fs / "
+                                    "%.1fs (rms=%.3f thresh=%.3f)",
+                                    silent_for, silence_stop_s,
+                                    rms_now, effective_thresh)
+                                _last_silence_log = time.time()
+                            if silent_for >= silence_stop_s:
+                                logger.info(
+                                    "wake-stop: %.1fs of silence "
+                                    "reached; auto-stopping recording.",
+                                    silence_stop_s)
                                 threading.Thread(target=stop_recording,
                                                  daemon=True).start()
                                 break

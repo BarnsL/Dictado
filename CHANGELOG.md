@@ -4,6 +4,32 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.6.4] -- 2026-05-22
+
+Wake-event silence auto-stop reliability + wake-sound playback
+duration.
+
+### Fixed
+
+- **Silence auto-stop reliably ends wake-triggered recordings.**
+  v0.6.1's static `wake_silence_rms_threshold = 0.010` was below
+  most rooms' ambient noise floor; "silent" pauses kept getting
+  classified as voice and the auto-stop never accumulated.
+  Replaced with a hybrid threshold:
+  `max(wake_silence_rms_threshold, voice_baseline * 0.35)` where
+  `voice_baseline` is the RMS of the first 1.0 s of the recording.
+  Auto-tunes per recording. Plus a per-second INFO-level
+  countdown log line so users can watch the auto-stop progress.
+  Static fallback raised from 0.010 to 0.030.
+- **Wake-startup sound now plays to completion.** The
+  PowerShell-via-WMF shim was hardcoded to a 1.5 s lifetime;
+  clips longer than that got truncated. Now reads
+  `MediaPlayer.NaturalDuration` and sleeps for the actual file
+  length + 200 ms.
+
+### Documentation
+- `docs/WAKE_WORD.md` updated with a "Silence threshold tuning"
+  subsection.
 ## [0.6.3] -- 2026-05-22
 
 Tray-icon tooltip casing.

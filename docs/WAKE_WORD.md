@@ -493,6 +493,63 @@ clipboard / AIM-paste flow runs.
 - To disable the auto-stop entirely (back to "explicit hotkey or
   the 60-second max-record cap"): set `wake_silence_stop_s` to 0.
 
+### Silence threshold tuning (the "it never auto-stops" gotcha)
+
+The auto-stop uses TWO thresholds and picks the larger of them:
+
+1. **Static floor** — `wake_silence_rms_threshold` from
+   `config.json`. Default `0.030`. Honours your environment.
+2. **Adaptive baseline** — `voice_baseline_rms × 0.35`, where
+   `voice_baseline_rms` is sampled from the first 1.0 s of the
+   recording (you just spoke the wake phrase, so that 1 s
+   captures your speaking volume on the current mic in the
+   current room).
+
+The effective threshold for any given recording is:
+
+```
+effective_threshold = max(
+    wake_silence_rms_threshold,        # static floor
+    voice_baseline_rms * 0.35           # 35% of your wake-utterance volume
+)
+```
+
+**Why both?** The static floor on its own breaks for users
+whose room ambient is louder than the default. The adaptive
+baseline on its own breaks if the wake phrase happens to come
+out unusually quiet (say, you whispered it). The `max(...)` of
+both gives a sane threshold across both extremes.
+
+**What you'll see in `daemon.log`**:
+
+```
+[INFO] wake-stop: voice baseline rms=0.072 (threshold floor=0.030,
+       ratio=0.35 -> effective threshold=0.030)
+[INFO] wake-stop: silent for 0.5s / 3.0s (rms=0.012 thresh=0.030)
+[INFO] wake-stop: silent for 1.5s / 3.0s (rms=0.011 thresh=0.030)
+[INFO] wake-stop: silent for 2.5s / 3.0s (rms=0.013 thresh=0.030)
+[INFO] wake-stop: 3.0s of silence reached; auto-stopping recording.
+```
+
+The countdown is rate-limited to once per second so the log
+doesn't spam.
+
+**Tuning guide**:
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Auto-stop never fires; the log shows `silent for 0.0s` constantly even when you're not speaking | Ambient noise floor is above the effective threshold | Raise `wake_silence_rms_threshold` to 0.040 or 0.050. Alternatively, leave a longer pause between the wake phrase and your sentence (the 1 s baseline will capture more of your real volume). |
+| Auto-stop cuts off mid-sentence on natural pauses | Effective threshold is too sensitive (catches your between-word pauses as silence) | Raise `wake_silence_stop_s` to 4.0 or 5.0; OR raise `wake_silence_rms_threshold` to 0.040 so quieter "silent" frames count as voice. |
+| Auto-stop fires before you've started talking | Voice baseline is too low (your wake phrase was unusually quiet) | Speak the wake phrase at normal volume; OR raise `wake_silence_rms_threshold` so the static floor takes precedence. |
+| You want NO auto-stop (always run to MAX_RECORD_SECONDS) | n/a | Set `wake_silence_stop_s` to `0`. |
+
+**The 0.35 ratio is hard-coded** in `WAKE_SILENCE_RATIO` near
+the top of `daemon.py` for now. Lower it (0.20-0.30) if you
+want more aggressive silence detection; raise it (0.45-0.60)
+if your "between sentence" pauses are getting cut off.
+
+---
+
 ### Both extras only fire on wake-triggered recordings
 
 The hotkey path keeps its exact previous behaviour:
