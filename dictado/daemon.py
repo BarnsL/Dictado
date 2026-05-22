@@ -665,7 +665,9 @@ def start_recording() -> None:
         if delay_ms:
             time.sleep(delay_ms / 1000.0)
         try:
-            pa = pyaudio.PyAudio()
+            # v0.6.13: serialize PaInstance init via audio.pa_lock.
+            with _audio.pa_lock:
+                pa = pyaudio.PyAudio()
             stream = pa.open(**open_kwargs)
             last_err = None
             break

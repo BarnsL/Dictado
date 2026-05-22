@@ -501,7 +501,10 @@ class WakeWordDetector:
                 pass
         try:
             if self._pyaudio_inst is not None:
-                self._pyaudio_inst.terminate()
+                # v0.6.13: hold pa_lock during terminate too.
+                from . import audio as _audio_mod
+                with _audio_mod.pa_lock:
+                    self._pyaudio_inst.terminate()
         except Exception:
             pass
         self._pyaudio_inst = None
@@ -653,7 +656,13 @@ class WakeWordDetector:
         except Exception:
             pass
         try:
-            self._pyaudio_inst = pyaudio.PyAudio()
+            # v0.6.13: serialize PaInstance init via the module-level
+            # lock. Without it, audio.py's enumeration helpers can
+            # race our init/terminate and corrupt PortAudio's COM
+            # apartment (segfault at _portaudio+0x9b7b).
+            from . import audio as _audio_mod
+            with _audio_mod.pa_lock:
+                self._pyaudio_inst = pyaudio.PyAudio()
             self._stream = self._pyaudio_inst.open(
                 format=pyaudio.paInt16,
                 channels=CHANNELS,

@@ -9,6 +9,19 @@ Two callers need a stable input-device index:
 
 Both want the same answer: which device should we be listening to?
 
+PortAudio COM critical section
+==============================
+
+PortAudio's WASAPI / WDM-KS host APIs use a single COM apartment per
+process. Concurrent `Pa_Initialize` + `Pa_Terminate` calls from
+different threads corrupt that apartment and segfault later
+`Pa_ReadStream` calls (live trace 2026-05-22: pythonw.exe crashed at
+`_portaudio.cp313-win_amd64.pyd+0x9b7b` four times in 30 minutes).
+
+Every PaInstance lifecycle in this codebase MUST go through the
+module-level `pa_lock` below. Holding the lock around init / terminate
+prevents the cross-thread COM-apartment teardown that 0x9b7b is.
+
 Behaviour
 ---------
 - If `config["audio_device_name"]` is None, return None. PyAudio
@@ -27,9 +40,15 @@ handling. Cost: ~50 ms per resolution. Negligible compared to the
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level lock guarding all PaInstance init / terminate calls
+# across the daemon. See the docstring above for why.
+pa_lock = threading.Lock()
 
 
 def list_input_devices() -> list[dict]:
@@ -37,41 +56,45 @@ def list_input_devices() -> list[dict]:
     every input-capable device PyAudio currently sees.
 
     Returns [] if PyAudio isn't available or enumeration fails.
+
+    Holds `pa_lock` for the entire duration so a concurrent wake-word
+    listener doesn't see torn-down PortAudio state mid-enumerate.
     """
     try:
         import pyaudio
     except ImportError:
         return []
     pa = None
-    try:
-        pa = pyaudio.PyAudio()
+    with pa_lock:
         try:
-            default_info = pa.get_default_input_device_info()
-            default_idx = int(default_info.get("index", -1))
-        except Exception:
-            default_idx = -1
-        out = []
-        for i in range(pa.get_device_count()):
+            pa = pyaudio.PyAudio()
             try:
-                info = pa.get_device_info_by_index(i)
+                default_info = pa.get_default_input_device_info()
+                default_idx = int(default_info.get("index", -1))
             except Exception:
-                continue
-            if int(info.get("maxInputChannels", 0)) <= 0:
-                continue
-            out.append({
-                "index": int(info.get("index", i)),
-                "name": str(info.get("name", "")),
-                "channels": int(info.get("maxInputChannels", 0)),
-                "default": int(info.get("index", i)) == default_idx,
-            })
-        return out
-    except Exception:
-        logger.exception("Failed to enumerate audio input devices.")
-        return []
-    finally:
-        if pa is not None:
-            try: pa.terminate()
-            except Exception: pass
+                default_idx = -1
+            out = []
+            for i in range(pa.get_device_count()):
+                try:
+                    info = pa.get_device_info_by_index(i)
+                except Exception:
+                    continue
+                if int(info.get("maxInputChannels", 0)) <= 0:
+                    continue
+                out.append({
+                    "index": int(info.get("index", i)),
+                    "name": str(info.get("name", "")),
+                    "channels": int(info.get("maxInputChannels", 0)),
+                    "default": int(info.get("index", i)) == default_idx,
+                })
+            return out
+        except Exception:
+            logger.exception("Failed to enumerate audio input devices.")
+            return []
+        finally:
+            if pa is not None:
+                try: pa.terminate()
+                except Exception: pass
 
 
 def resolve_input_device_index(name_substring: Optional[str]
@@ -88,6 +111,9 @@ def resolve_input_device_index(name_substring: Optional[str]
     A string that matches NO current device logs a warning and
     returns None so the daemon stays usable rather than crashing
     when the configured device is unplugged.
+
+    list_input_devices already holds pa_lock, so we don't need to
+    take it here too.
     """
     if not name_substring:
         return None
