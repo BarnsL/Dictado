@@ -1,4 +1,4 @@
-"""dictado.daemon — the cross-platform tray daemon.
+﻿"""dictado.daemon — the cross-platform tray daemon.
 
 Runs as a single long-lived process. Exposes:
 
@@ -490,10 +490,22 @@ def stop_recording() -> None:
                     # sensible (typically their previous window).
                     target_hwnd = foreground_token
 
+            # When activate_target() handled focus (specific-app AIM path),
+            # tell paste_into_window NOT to re-run focus_window. The
+            # second AttachThreadInput + SetForegroundWindow would clobber
+            # whatever inner WebContents focus the post_activate hook
+            # established (UIA SetFocus on the chat input, in particular).
+            aim_handled_focus = (
+                aim not in ('off', 'auto')
+                and target_hwnd != foreground_token
+            )
             pasted = False
             if (autopaste_enabled or aim != 'off') and (target_hwnd or aim != 'off'):
                 try:
-                    pasted = bool(_plat.paste_into_window(target_hwnd))
+                    pasted = bool(_plat.paste_into_window(
+                        target_hwnd,
+                        already_focused=aim_handled_focus,
+                    ))
                 except Exception:
                     logger.exception("Auto-paste failed; text on clipboard.")
 

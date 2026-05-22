@@ -1,4 +1,4 @@
-"""Windows adapter for dictado.
+﻿"""Windows adapter for dictado.
 
 This is the most battle-tested of the three platform modules.
 
@@ -354,7 +354,8 @@ def focus_window(hwnd: int, timeout_s: float = 1.0) -> bool:
     return False
 
 
-def paste_into_window(hwnd: int, *, verify_focus: bool = True) -> bool:
+def paste_into_window(hwnd: int, *, verify_focus: bool = True,
+                      already_focused: bool = False) -> bool:
     """Bring `hwnd` to the foreground (if given) and synthesise Ctrl+V.
 
     Returns True on success, False if focus could not be transferred or
@@ -363,20 +364,52 @@ def paste_into_window(hwnd: int, *, verify_focus: bool = True) -> bool:
     False return means "paste didn't land but the user can still hit
     Ctrl+V manually".
 
-    `hwnd == 0` keeps the previous "paste into whatever is foreground
-    now" behaviour, used by AIM after agent_input.activate_target()
-    has already focused the right window.
+    Parameters
+    ----------
+    hwnd : int
+        Target window handle. ``0`` means "paste into whatever is
+        foreground right now"; we only verify a foreground exists.
+    verify_focus : bool
+        For the ``hwnd == 0`` path, require GetForegroundWindow() to
+        return non-zero before pasting. Default True.
+    already_focused : bool
+        When the caller has just activated the window (and especially
+        when an inner-focus hook like UIA SetFocus already moved
+        WebContents focus to the right element), set this True so we
+        DO NOT call focus_window() a second time. Without this guard,
+        the re-focus dance (AttachThreadInput + SetForegroundWindow)
+        causes Chromium to reset WebContents focus to its default,
+        clobbering the UIA SetFocus and landing the Ctrl+V chord on
+        whatever Chromium picked. We still verify the requested HWND
+        is foreground; if it isn't, we fall back to focus_window().
     """
     if hwnd:
-        if not focus_window(hwnd, timeout_s=1.0):
-            logger.warning("paste_into_window: focus_window(%#x) failed; "
-                           "skipping paste. Text remains on the clipboard.",
-                           hwnd)
-            return False
-        # Tiny extra settle so Electron / Chromium input handlers
-        # actually accept the synthesised Ctrl+V (they debounce input
-        # events for ~50 ms after a focus change).
-        time.sleep(0.08)
+        if already_focused:
+            # Trust the caller. Verify the window is still foreground
+            # (a quick GetForegroundWindow check) and pump Ctrl+V
+            # without disturbing the inner WebContents focus.
+            fg = int(_user32.GetForegroundWindow() or 0)
+            if fg != hwnd:
+                logger.info(
+                    "paste_into_window(already_focused=True): foreground is "
+                    "%#x not %#x; falling back to a verified focus_window.",
+                    fg, hwnd)
+                if not focus_window(hwnd, timeout_s=0.5):
+                    logger.warning(
+                        "paste_into_window: focus_window(%#x) recovery "
+                        "failed; skipping paste.", hwnd)
+                    return False
+                time.sleep(0.08)
+        else:
+            if not focus_window(hwnd, timeout_s=1.0):
+                logger.warning(
+                    "paste_into_window: focus_window(%#x) failed; "
+                    "skipping paste. Text remains on the clipboard.", hwnd)
+                return False
+            # Tiny extra settle so Electron / Chromium input handlers
+            # actually accept the synthesised Ctrl+V (they debounce
+            # input events for ~50 ms after a focus change).
+            time.sleep(0.08)
     elif verify_focus:
         # AIM 'auto' path: at minimum confirm SOMETHING owns focus
         # and it isn't our own popup. Otherwise the paste lands in our

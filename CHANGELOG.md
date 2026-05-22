@@ -4,6 +4,28 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.5.4] -- 2026-05-22
+
+AIM auto-launch + paste-reliability followups.
+
+### New
+
+- **Auto-launch missing AIM targets.** Profiles can declare a
+  `launch_paths` tuple; if the target app isn't running when the
+  hotkey fires, the daemon spawns the first existing entry detached
+  and polls for its window before proceeding. Hints use
+  `$LOCALAPPDATA` / `$PROGRAMFILES` / `$APPDATA` etc. Today's
+  shipping hints cover ChatGPT desktop, Claude desktop, Cursor.
+
+### Fixed
+
+- **Inner-focus state is now preserved across paste.**
+  `paste_into_window` accepts a new `already_focused: bool` keyword.
+  When the caller has just run `activate_target` and an inner-focus
+  hook (UIA `SetFocus()` on the chat input), it passes
+  `already_focused=True` so we don't re-run `focus_window` -- which
+  was clobbering Chromium's WebContents focus and dropping the Ctrl+V
+  on the wrong element. This was the missing piece in v0.5.3.
 ## [0.5.3] -- 2026-05-22
 
 AIM paste reliably reaches Electron AI app chat inputs.

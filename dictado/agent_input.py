@@ -93,6 +93,13 @@ class App:
     # for ChatGPT desktop / Claude desktop / Cursor / Amazon Quick)
     # that nudges focus onto the input field.
     post_activate: Callable[[], None] | None = None
+    # Optional launch hints: ordered tuple of paths (or path templates
+    # using $LOCALAPPDATA / $PROGRAMFILES / $PROGRAMFILES(X86) / $APPDATA)
+    # to try when locate() returns 0 because the app isn't running.
+    # First existing entry wins; subprocess.Popen launches it detached
+    # and activate_target then polls locate() until the window appears.
+    # Empty tuple means "we don't know how to launch this app".
+    launch_paths: tuple[str, ...] = ()
 
 
 # --- Win32 plumbing (no-op on non-Windows) ----------------------------------
@@ -346,14 +353,23 @@ if sys.platform == "win32":
     # it tries UIA's IUIAutomationElement.SetFocus() first and falls
     # back to a Ctrl+L chord if UIA can't find a plausible Edit. Wire
     # it for every Electron AI app that has WebContents-focus issues.
+    # Each row: (id, label, _profile_pair, post_activate, launch_paths)
+    # launch_paths can be ()  to mean "don't auto-launch this app".
     _PROFILES_RAW: list[tuple] = [
         # AI assistants ------------------------------------------------
-        ("chatgpt",      "ChatGPT (desktop)",  _profile_by_image("ChatGPT.exe"),         _focus_input_via_uia),
-        ("claude",       "Claude (desktop)",   _profile_by_image("Claude.exe"),          _focus_input_via_uia),
-        ("copilot",      "Microsoft Copilot",  _profile_by_image("Copilot.exe", "ai.exe"), _focus_input_via_uia),
-        ("amazon-quick", "Amazon Quick",       _profile_by_image("Amazon Quick.exe"),    _focus_input_via_uia),
+        ("chatgpt",      "ChatGPT (desktop)",  _profile_by_image("ChatGPT.exe"),         _focus_input_via_uia,
+         (r"$LOCALAPPDATA\Programs\ChatGPT\ChatGPT.exe",)),
+        ("claude",       "Claude (desktop)",   _profile_by_image("Claude.exe"),          _focus_input_via_uia,
+         (r"$LOCALAPPDATA\AnthropicClaude\Claude.exe",
+          r"$LOCALAPPDATA\Programs\Claude\Claude.exe")),
+        ("copilot",      "Microsoft Copilot",  _profile_by_image("Copilot.exe", "ai.exe"), _focus_input_via_uia, ()),
+        ("amazon-quick", "Amazon Quick",       _profile_by_image("Amazon Quick.exe"),    _focus_input_via_uia,
+         (r"$PROGRAMFILES\Amazon Quick\Amazon Quick.exe",
+          r"$LOCALAPPDATA\Programs\Amazon Quick\Amazon Quick.exe",
+          r"$APPDATA\Microsoft\Windows\Start Menu\Programs\Amazon Quick.lnk")),
         # IDEs / editors ----------------------------------------------
-        ("cursor",       "Cursor",             _profile_by_image("Cursor.exe"),          _focus_input_via_uia),
+        ("cursor",       "Cursor",             _profile_by_image("Cursor.exe"),          _focus_input_via_uia,
+         (r"$LOCALAPPDATA\Programs\Cursor\Cursor.exe",)),
         ("vscode",       "Visual Studio Code", _profile_by_image("Code.exe")),
         ("vscode_insiders", "VS Code Insiders",_profile_by_image("Code - Insiders.exe")),
         ("kiro",         "Kiro",               _profile_by_image("Kiro.exe")),
@@ -376,15 +392,17 @@ if sys.platform == "win32":
         ("notion",       "Notion",             _profile_by_image("Notion.exe")),
     ]
 
-    # Build the App list, allowing the optional 4th tuple slot to be a
-    # post_activate callable. Profiles without it default to None.
+    # Build the App list. _PROFILES_RAW rows can be 3, 4, or 5 long:
+    #   (id, label, profile_triple)
+    #   (id, label, profile_triple, post_activate)
+    #   (id, label, profile_triple, post_activate, launch_paths)
     APP_PROFILES: list[App] = []
     for _row in _PROFILES_RAW:
-        if len(_row) == 4:
-            _pid, _label, (_d, _a, _l), _post = _row
-        else:
-            _pid, _label, (_d, _a, _l) = _row
-            _post = None
+        _pid    = _row[0]
+        _label  = _row[1]
+        _d, _a, _l = _row[2]
+        _post   = _row[3] if len(_row) > 3 else None
+        _launch = _row[4] if len(_row) > 4 else ()
         APP_PROFILES.append(App(
             id=_pid,
             label=_label,
@@ -392,6 +410,7 @@ if sys.platform == "win32":
             activate=_a,
             locate=_l,
             post_activate=_post,
+            launch_paths=_launch,
         ))
 
 
@@ -423,6 +442,91 @@ if sys.platform == "win32":
         return activate_target(app_id, timeout_s=timeout_s) != 0
 
 
+
+    def _expand(path_template: str) -> str:
+        """Expand $LOCALAPPDATA / $PROGRAMFILES / $PROGRAMFILES(X86) /
+        $APPDATA placeholders inside a launch_paths entry."""
+        from os import environ
+        out = path_template
+        # Order matters: longer keys first so $PROGRAMFILES doesn't
+        # eat the "(X86)" half of $PROGRAMFILES(X86).
+        for key in ("PROGRAMFILES(X86)", "LOCALAPPDATA", "PROGRAMFILES",
+                    "APPDATA", "PROGRAMDATA", "USERPROFILE"):
+            out = out.replace(f"${key}", environ.get(key, ""))
+        return out
+
+
+    def launch_target(app_id: str, *, wait_s: float = 8.0) -> int:
+        """Try to launch the named app if it's not already running, then
+        return its window HWND (0 on failure).
+
+        - First call locate() to see if the app is already running. If
+          so, return that HWND immediately.
+        - Otherwise iterate through the profile's launch_paths in order;
+          for each entry that resolves to an existing file, spawn it
+          detached via subprocess.Popen (with .lnk handled via shell
+          start). Then poll locate() at 200 ms intervals up to wait_s.
+        """
+        import subprocess
+        app = _profile(app_id)
+        if app is None:
+            return 0
+        try:
+            hwnd = app.locate()
+        except Exception:
+            hwnd = 0
+        if hwnd:
+            return hwnd
+        if not app.launch_paths:
+            logger.info("launch_target(%r): no launch_paths configured.",
+                        app_id)
+            return 0
+        spawned = False
+        for raw in app.launch_paths:
+            candidate = _expand(raw)
+            if not candidate or not os.path.exists(candidate):
+                continue
+            try:
+                if candidate.lower().endswith(".lnk"):
+                    # .lnk needs the shell to resolve it; os.startfile
+                    # is the standard, non-blocking way on Windows.
+                    os.startfile(candidate)  # noqa: S606
+                else:
+                    subprocess.Popen(
+                        [candidate],
+                        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                                       | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                        close_fds=True,
+                    )
+                logger.info("launch_target(%r): spawned %s", app_id, candidate)
+                spawned = True
+                break
+            except Exception:
+                logger.exception(
+                    "launch_target(%r): spawn of %s raised; trying next.",
+                    app_id, candidate)
+        if not spawned:
+            logger.info("launch_target(%r): no launch_paths resolved to an "
+                        "existing file.", app_id)
+            return 0
+        # Poll locate() until the window shows up or we time out.
+        deadline = time.monotonic() + max(0.5, wait_s)
+        poll = 0.20
+        while time.monotonic() < deadline:
+            try:
+                hwnd = app.locate()
+            except Exception:
+                hwnd = 0
+            if hwnd:
+                logger.info("launch_target(%r): window appeared in %.1fs",
+                            app_id, wait_s - (deadline - time.monotonic()))
+                return hwnd
+            time.sleep(poll)
+        logger.warning("launch_target(%r): spawned the app but no window "
+                       "appeared within %.1fs.", app_id, wait_s)
+        return 0
+
+
     def activate_target(app_id: str, *, timeout_s: float = 1.0) -> int:
         """Focus the named app's main window and return its HWND.
 
@@ -448,8 +552,15 @@ if sys.platform == "win32":
             logger.exception("locate() raised for %r.", app_id)
             return 0
         if not hwnd:
-            logger.info("activate_target(%r): no live window found.", app_id)
-            return 0
+            # Try to launch the app, then re-locate.
+            if app.launch_paths:
+                logger.info("activate_target(%r): no live window; "
+                            "attempting auto-launch.", app_id)
+                hwnd = launch_target(app_id)
+            if not hwnd:
+                logger.info("activate_target(%r): no live window found "
+                            "and auto-launch failed or unavailable.", app_id)
+                return 0
         try:
             from dictado.platform.windows import focus_window
         except Exception:
@@ -522,6 +633,91 @@ else:  # macOS / Linux: stubs, no profiles surfaced today.
         logger.warning("Agent Input Mode app activation isn't implemented "
                        "on %s yet.", sys.platform)
         return False
+
+
+    def _expand(path_template: str) -> str:
+        """Expand $LOCALAPPDATA / $PROGRAMFILES / $PROGRAMFILES(X86) /
+        $APPDATA placeholders inside a launch_paths entry."""
+        from os import environ
+        out = path_template
+        # Order matters: longer keys first so $PROGRAMFILES doesn't
+        # eat the "(X86)" half of $PROGRAMFILES(X86).
+        for key in ("PROGRAMFILES(X86)", "LOCALAPPDATA", "PROGRAMFILES",
+                    "APPDATA", "PROGRAMDATA", "USERPROFILE"):
+            out = out.replace(f"${key}", environ.get(key, ""))
+        return out
+
+
+    def launch_target(app_id: str, *, wait_s: float = 8.0) -> int:
+        """Try to launch the named app if it's not already running, then
+        return its window HWND (0 on failure).
+
+        - First call locate() to see if the app is already running. If
+          so, return that HWND immediately.
+        - Otherwise iterate through the profile's launch_paths in order;
+          for each entry that resolves to an existing file, spawn it
+          detached via subprocess.Popen (with .lnk handled via shell
+          start). Then poll locate() at 200 ms intervals up to wait_s.
+        """
+        import subprocess
+        app = _profile(app_id)
+        if app is None:
+            return 0
+        try:
+            hwnd = app.locate()
+        except Exception:
+            hwnd = 0
+        if hwnd:
+            return hwnd
+        if not app.launch_paths:
+            logger.info("launch_target(%r): no launch_paths configured.",
+                        app_id)
+            return 0
+        spawned = False
+        for raw in app.launch_paths:
+            candidate = _expand(raw)
+            if not candidate or not os.path.exists(candidate):
+                continue
+            try:
+                if candidate.lower().endswith(".lnk"):
+                    # .lnk needs the shell to resolve it; os.startfile
+                    # is the standard, non-blocking way on Windows.
+                    os.startfile(candidate)  # noqa: S606
+                else:
+                    subprocess.Popen(
+                        [candidate],
+                        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                                       | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                        close_fds=True,
+                    )
+                logger.info("launch_target(%r): spawned %s", app_id, candidate)
+                spawned = True
+                break
+            except Exception:
+                logger.exception(
+                    "launch_target(%r): spawn of %s raised; trying next.",
+                    app_id, candidate)
+        if not spawned:
+            logger.info("launch_target(%r): no launch_paths resolved to an "
+                        "existing file.", app_id)
+            return 0
+        # Poll locate() until the window shows up or we time out.
+        deadline = time.monotonic() + max(0.5, wait_s)
+        poll = 0.20
+        while time.monotonic() < deadline:
+            try:
+                hwnd = app.locate()
+            except Exception:
+                hwnd = 0
+            if hwnd:
+                logger.info("launch_target(%r): window appeared in %.1fs",
+                            app_id, wait_s - (deadline - time.monotonic()))
+                return hwnd
+            time.sleep(poll)
+        logger.warning("launch_target(%r): spawned the app but no window "
+                       "appeared within %.1fs.", app_id, wait_s)
+        return 0
+
 
     def activate_target(app_id: str, *, timeout_s: float = 1.0) -> int:
         logger.warning("Agent Input Mode app activation isn't implemented "
