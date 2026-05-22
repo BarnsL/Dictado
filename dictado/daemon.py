@@ -633,13 +633,55 @@ def start_recording() -> None:
     except Exception:
         device_name = None
     device_idx = _audio.resolve_input_device_index(device_name)
+    if device_idx is None:
+        try:
+            _all = _audio.list_input_devices()
+            _default = next((d for d in _all if d["default"]), None)
+            if _default is not None:
+                logger.info(
+                    "Recording will open OS default input #%d %r "
+                    "(audio_device_name=%r).",
+                    _default["index"], _default["name"], device_name)
+            else:
+                logger.warning("No default input device found.")
+        except Exception:
+            pass
+    else:
+        logger.info("Recording will open input #%d (audio_device_name=%r).",
+                    device_idx, device_name)
 
-    pa = pyaudio.PyAudio()
     open_kwargs = dict(format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
                        input=True, frames_per_buffer=CHUNK)
     if device_idx is not None:
         open_kwargs["input_device_index"] = device_idx
-    stream = pa.open(**open_kwargs)
+
+    # Retry pa.open with backoff. Windows MME's device-handle release
+    # is asynchronous after the wake listener's pause() closes its
+    # stream; pa.open() can race that window and get -9999 host error.
+    pa = None
+    stream = None
+    last_err = None
+    for delay_ms in (0, 50, 100, 200, 400):
+        if delay_ms:
+            time.sleep(delay_ms / 1000.0)
+        try:
+            pa = pyaudio.PyAudio()
+            stream = pa.open(**open_kwargs)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            try: pa and pa.terminate()
+            except Exception: pass
+            pa = None
+            logger.info(
+                "pa.open attempt failed (delay before retry=%dms): %s",
+                delay_ms, e)
+    if last_err is not None or stream is None:
+        logger.error(
+            "Failed to open audio stream after retries; aborting record. "
+            "Last error: %s", last_err)
+        return
 
     def _record_loop(_pa, _stream):
         global recording

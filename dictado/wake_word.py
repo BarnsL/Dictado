@@ -597,6 +597,19 @@ class WakeWordDetector:
             logger.exception("wake-word: failed to resolve audio device; "
                              "falling back to OS default.")
             self._device_index = None
+        # Log which device the wake-listener will bind to.
+        try:
+            if self._device_index is None:
+                _devs = _audio.list_input_devices()
+                _d = next((d for d in _devs if d["default"]), None)
+                if _d is not None:
+                    logger.info("Wake listener will open OS default "
+                                "input #%d %r.", _d["index"], _d["name"])
+            else:
+                logger.info("Wake listener will open input #%d.",
+                            self._device_index)
+        except Exception:
+            pass
         try:
             self._pyaudio_inst = pyaudio.PyAudio()
             self._stream = self._pyaudio_inst.open(
