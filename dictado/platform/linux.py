@@ -119,7 +119,7 @@ def install_autostart(python_exe: str, script_path: str) -> Path:
     p.write_text(f"""[Desktop Entry]
 Type=Application
 Name=dictado
-Comment=Local push-to-talk voice-to-text
+Comment=Local voice-activated and push-to-talk voice-to-text
 Exec={python_exe} {script_path}
 Terminal=false
 X-GNOME-Autostart-enabled=true

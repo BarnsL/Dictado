@@ -1,4 +1,4 @@
-"""dictado - local push-to-talk voice-to-text for desktop.
+"""dictado - local voice-activated and push-to-talk voice-to-text for desktop.
 
 Cross-platform daemon that turns OpenAI Whisper into an instant
 press-and-talk dictation tool. The transcription happens entirely on the

@@ -1220,7 +1220,7 @@ def _write_trigger(name: str) -> int:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="dictado",
-        description="Local push-to-talk voice-to-text daemon.")
+        description="Local voice-activated and push-to-talk voice-to-text daemon.")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--toggle",       action="store_true",
                    help="Tell a running daemon to start/stop recording.")
