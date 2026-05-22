@@ -198,11 +198,18 @@ _BIJOU = (
     r"bee[\s\-]*(?:j|zh|g)(?:oo|ew|u|ou|o)|"   # bee-joo, bee zhou, beegoo, bee jew
     r"be[\s\-]*(?:j|zh|g)(?:oo|ew|u|ou|o)|"    # be-joo, be jew
     r"b(?:ay|ai)[\s\-]*(?:j|zh)?[ou]+|"        # bayou, bay-zhou, baizou
+    # 'baby + joo' -- mirror of the BIBOO case where soft 'i' becomes
+    # the 'eɪ' diphthong.
+    r"baby[\s\-]*(?:j|zh|g)(?:oo|ew|u|ou|o)|"
     # Fall-back syllable-split forms:
     r"begu|begoo|begew|"
     r"big[\s\-]*(?:joo|jew|zhou|jou|you)|"     # big joo, big-zhou
     r"beat[\s\-]*joo|beat[\s\-]*you|"        # beat joo (Whisper splits "bee" -> "beat")
-    r"b[\s\-]*joo"                             # bare 'b joo'
+    r"b[\s\-]*joo|"                            # bare 'b joo'
+    # 'p' for 'b' substitution + 'j'/'zh' approximations.
+    r"pee[\s\-]*(?:j|zh)(?:oo|ew|u)|"          # pee-joo, peezhew
+    r"pi[\s\-]*joo|"
+    r"beat[\s\-]*you"                          # already there but keep belt-and-braces
     r")"
 )
 
@@ -213,18 +220,33 @@ _BIJOU = (
 _BIBOO = (
     r"(?:"
     # Direct spellings:
-    r"biboo|bibou|bibu|bib|"
+    r"biboo|bibou|bibu|bibo|bib|"
     # 'bee + b' variants (most common Whisper output: 'Bee Boo'):
-    r"bee[\s\-]*b(?:oo|ou|u|o)|"               # bee boo, bee-boo, bee bu
+    r"bee[\s\-]*b(?:oo|ou|u|o)|"               # bee boo, bee-boo, bee bu, bee bo
     r"be[\s\-]*b(?:oo|ou|u|o)|"                # be boo, be-boo
     r"bi[\s\-]*b(?:oo|ou|u|o)|"                # bi boo, bi-boo
+    # 'baby + boo' -- Whisper hears the soft 'i' as the diphthong
+    # 'eɪ', so 'biboo' -> 'baby boo' (observed live 2026-05-21).
+    r"baby[\s\-]*b(?:oo|ou|u|o)|"
+    # 'beep' -- Whisper truncates 'biboo' to 'beep' when the trailing
+    # 'oo' is quiet or short. Important: only match 'beep' when it's
+    # the WHOLE name token; we don't want to consume 'beeper' or
+    # similar.
+    r"beep|peep|beeb|"
     # Whisper drops the 'b' in 'biboo' on noisy windows -> 'bee oo'.
     # We don't want to match that bare; it's too generic.
     r"beb(?:u|oo|a|ou)|"                       # bebu, beboo, beba, bebou
-    r"peeboo|peabo|peabu|"                     # aspirated 'b' false-recognitions
-    r"big[\s\-]*boo|"                          # 'big boo' false-recognition
-    # Whisper sometimes attaches the prefix word to the name:
-    r"hey[\s\-]*boo|ok[\s\-]*boo|yo[\s\-]*boo"
+    r"peeboo|peabo|peabu|peabo[ou]|"           # aspirated 'b' false-recognitions
+    r"big[\s\-]*boo|"                          # 'big boo'
+    # Whisper sometimes attaches the prefix word to the name; the
+    # outer regex needs at least the prefix in the line, but having
+    # the attached form here lets us still match.
+    r"hey[\s\-]*boo|ok[\s\-]*boo|yo[\s\-]*boo|"
+    r"happy[\s\-]*boo|"                        # 'h' bleeds into next syllable
+    r"yobu|yo[\s\-]*bu|"                       # 'yo bibu' -> 'yobu'
+    # Defensive: 'b' rendered as 'p' is the most common pho swap;
+    # match it explicitly.
+    r"piboo|pibu|pibou"
     r")"
 )
 

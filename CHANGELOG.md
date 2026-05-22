@@ -4,6 +4,24 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.6.2] -- 2026-05-22
+
+Wake-word reliability fixes.
+
+### Fixed
+
+- **Wake listener now actually re-enables on daemon restart.**
+  v0.6.1 persisted `wake_word_enabled: true` to config.json
+  correctly but the daemon's `main()` startup path was missing
+  the `_start_wake_detector_async()` call. Result: the toggle
+  appeared "checked" in the tray menu but the listener wasn't
+  running until the user toggled it off and on again. Closes
+  the cycle.
+- **Regex broadened with `Baby Boo` and `beep` variants** that
+  Whisper produces frequently when transcribing "biboo" on
+  noisy / quiet windows. Plus the symmetric `Baby + j-/zh-`
+  pattern for "bijou", and defensive `b â†’ p` substitutions
+  (`piboo`, `pee-joo`, etc).
 ## [0.6.1] -- 2026-05-22
 
 Wake-event polish: startup sound, silence auto-stop, broader regex.
