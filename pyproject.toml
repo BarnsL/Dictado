@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name        = "dictado"
-version = "0.5.1"
+version = "0.6.5"
 description = "Local push-to-talk voice-to-text daemon. Cross-platform. No cloud."
 readme      = "README.md"
 license     = { file = "LICENSE" }
@@ -51,3 +51,11 @@ dictado = "dictado.daemon:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dictado*"]
+
+[tool.setuptools.package-data]
+"dictado" = ["py.typed"]
+
+[tool.setuptools.data-files]
+# Ship bundled assets with sdist so a fresh `pip install`
+# from a tarball still finds them.
+"share/dictado/sounds" = ["assets/sounds/*"]

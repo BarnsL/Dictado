@@ -562,3 +562,48 @@ flag that the wake on_wake callback sets to True before spawning
 `start_recording()`. `stop_recording()` resets it. So if you press
 the hotkey within the same daemon run, the next recording behaves
 exactly like it always did.
+
+---
+
+## Bundled wake-cue assets (v0.6.5+)
+
+The repo ships its own wake sounds inside `assets/sounds/` so a fresh
+`git clone` is fully functional without any external setup:
+
+| File | What it is |
+|---|---|
+| `biboo-asmr-hello.m4a` | The default wake cue. ~2 seconds, M4A. |
+| `chime.wav` | A synthesized two-tone chime fallback. ~0.4 seconds, WAV. Used if the M4A is missing or you've explicitly cleared `wake_sound_path` in config. |
+
+Resolution order at runtime (in `paths.resolve_wake_sound`):
+
+1. Whatever you've set in `config.json` as `wake_sound_path`, if the file exists.
+2. `<repo>/assets/sounds/biboo-asmr-hello.m4a` (the user-selected default).
+3. `<repo>/assets/sounds/chime.wav` (the synthesized safe fallback).
+4. None (silently skip the cue).
+
+To use a custom file: set `wake_sound_path` to its absolute path. To
+go back to the bundled default: set it to an empty string `""`.
+
+## Lead-in: recording starts after the cue (`wake_sound_lead_s`)
+
+The startup sound now plays **before** the recording mic opens. By
+default, the cue starts and the calling thread sleeps for
+`wake_sound_lead_s` seconds (default `1.0`) before the mic goes live.
+This gives the user a clean "I heard you" confirmation that does NOT
+get captured into the recording, and avoids the cue's reverb getting
+transcribed by Whisper.
+
+```json
+{
+  "wake_sound_lead_s": 1.0
+}
+```
+
+| Symptom | Tweak |
+|---|---|
+| Recording starts too eagerly and the cue's tail still bleeds in | Raise `wake_sound_lead_s` to match the cue's full duration (e.g. `2.0` for the default biboo cue) |
+| The 1 s gap between cue and "I'm listening" feels slow | Lower to `0.5` |
+| You want the legacy v0.6.4 behaviour (cue and mic open together) | Set to `0.0` |
+
+The hard upper bound is 5 s; values outside `[0.0, 5.0]` are clamped.

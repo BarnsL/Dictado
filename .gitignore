@@ -1,4 +1,8 @@
 # --------------------------------------------------------------------------
+# Local-only notes never meant for git (session logs, scratch, etc.)
+NOTES_*.md
+SESSION_*.md
+
 # Personal data and runtime state
 # --------------------------------------------------------------------------
 # The daemon archives every recording (WAV + a rolling Markdown transcript
@@ -13,6 +17,12 @@ AudioTranscriptions_*.md
 *.m4a
 *.ogg
 *.opus
+
+# Bundled assets (sounds, icons): committed so the repo is fully
+# functional out of the box. The blanket *.m4a / *.wav rules above
+# would otherwise block these.
+!assets/
+!assets/**
 
 # Local daemon state
 .dictado/

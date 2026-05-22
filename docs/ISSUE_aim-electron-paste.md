@@ -196,7 +196,7 @@ WebContents focus untouched. If the foreground check fails (rare;
 implies the user clicked away in the few ms after activate_target
 returned), it falls back to the verified focus_window dance.
 
-**Verified:** smoke test against Amazon Quick succeeded; the chat
+**Verified:** smoke test against Quick AI succeeded; the chat
 input now contains the pasted text.
 
 **Lesson:** defensive re-focus is the right move for the simple
@@ -249,7 +249,7 @@ Cursor. Adding a new app is one tuple addition in `_PROFILES_RAW`.
 
 **Discovered:** 2026-05-22, after v0.5.4 / v0.6.5.dev0 went out.
 The auto-launch path successfully spawned the target app and waited
-for its OS window to appear (~1.6 s for AQ on this hardware). But
+for its OS window to appear (~1.6 s for the chat app on this hardware). But
 the UIA SetFocus immediately afterwards landed on the splash screen,
 not the chat input -- because Chromium hadn't yet rendered the chat
 input element into its accessibility tree.
@@ -257,10 +257,10 @@ input element into its accessibility tree.
 **Symptom (verbatim from log):**
 
 ```
-[INFO] activate_target('amazon-quick'): no live window; attempting auto-launch.
-[INFO] launch_target('amazon-quick'): spawned C:\Program Files\Amazon Quick\Amazon Quick.exe
-[INFO] launch_target('amazon-quick'): window appeared in 1.6s
-[INFO] Rating: ... -- rated 10/10        ; rating popup fires later, AQ chat input still empty
+[INFO] activate_target('quick-ai'): no live window; attempting auto-launch.
+[INFO] launch_target('quick-ai'): spawned C:\Program Files\Quick AI\quick.exe
+[INFO] launch_target('quick-ai'): window appeared in 1.6s
+[INFO] Rating: ... -- rated 10/10        ; rating popup fires later, the chat app chat input still empty
 ```
 
 The daemon thinks everything succeeded; the user sees an empty AQ
@@ -287,7 +287,7 @@ focusable Edit matching the chat-input heuristic shows up.
 `activate_target` records `just_launched=True` on the thread-local
 when `launch_target` actually spawned the app; `_focus_input_via_uia`
 reads it and runs `wait_for_chat_input` first. Default deadline is
-12 s, sized to comfortably exceed AQ cold-start on this hardware.
+12 s, sized to comfortably exceed the chat app cold-start on this hardware.
 
 After the wait, foreground often drifts (splash-screen handoff),
 so we re-assert it via a quick `focus_window(hwnd, timeout_s=0.5)`
@@ -297,8 +297,8 @@ before returning. That keeps `paste_into_window`'s
 **Verified end-to-end:**
 
 ```
-launch_target('amazon-quick'): spawned [...]Amazon Quick.exe
-launch_target('amazon-quick'): window appeared in 1.6s
+launch_target('quick-ai'): spawned [...]quick.exe
+launch_target('quick-ai'): window appeared in 1.6s
 wait_for_chat_input(0x...): chat input appeared in 0.18s
 hwnd = 0x... (took 2.30s end-to-end)
 paste_ok: True
@@ -316,7 +316,7 @@ ControlType-specific predicate) rather than just window presence.
 ## Follow-up 4: the picker was matching the wrong element + the deadline was too short + SetFocus wasn't atomic
 
 **Discovered:** 2026-05-22, after v0.5.5 / v0.6.6.dev0 still failed
-in practice. The user dictated against the AQ "New chat" landing
+in practice. The user dictated against the the chat app "New chat" landing
 page (the greeting screen with "What can Quick do?" / "Catch me up
 on what I missed today" suggested-action buttons under the chat
 input). The chat input came up empty even though the daemon log
@@ -327,13 +327,13 @@ said `wait_for_chat_input(...): chat input appeared in 0.29s`.
 ### Problem 1: deadline was way too short on a fully-cold launch
 
 The DEBUG-level per-poll log we added to `wait_for_chat_input`
-showed the truth: on a post-reboot, GPU-cache-cold AQ launch, the
+showed the truth: on a post-reboot, GPU-cache-cold the chat app launch, the
 chat input element doesn't enter the UIA tree for ~24 seconds.
 Polls #1 through #64 saw only the WebContents Document; poll #65
 finally exposed the `Edit name='Ask a question...'` we were
 waiting for. Our 12 s deadline meant the wait timed out before
 the element appeared and the hook fell through to a Ctrl+L chord
-that AQ doesn't bind to focus-prompt.
+that the chat app doesn't bind to focus-prompt.
 
 **Fix:** bumped the deadline from 12 s to 30 s. Warm-path latency
 is unaffected (returns in ~50 ms). Per-poll DEBUG log left in
@@ -349,7 +349,7 @@ it "the chat input" and our SetFocus hit the document scroll-host,
 not the actual `Ask a question...` Edit.
 
 **Fix:** profiles can now declare an `input_name_regex` that the
-chosen element's UIA `Name` property must match. AQ uses `^Ask`
+chosen element's UIA `Name` property must match. the chat app uses `^Ask`
 (matches "Ask a question..."). ChatGPT desktop uses `^Message`,
 Claude uses `^(Reply to |Talk with |How can I help)`. Profiles
 without a regex fall back to the legacy area + position
@@ -380,10 +380,10 @@ this mode and returns as soon as focus is verified.
 
 ### Verified
 
-Smoke after killing AQ and forcing a fully cold launch:
+Smoke after killing the chat app and forcing a fully cold launch:
 
 ```
-launch_target('amazon-quick'): spawned ...Amazon Quick.exe
+launch_target('quick-ai'): spawned ...quick.exe
 launch_target: window appeared in 1.7 s
 [64 polls @ 0.30 s cadence: only WebContents Document present]
 poll #65: tree has 2 Edit/Document elements (2 focusable, 2 named)

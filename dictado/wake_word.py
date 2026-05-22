@@ -473,6 +473,8 @@ class WakeWordDetector:
 
     def pause(self) -> None:
         """Stop inference AND tear down the PyAudio capture stream.
+        SYNCHRONOUS: blocks until the audio thread has exited and
+        PortAudio's COM resources are fully released.
 
         IMPORTANT: closing the stream (rather than just gating
         inference) is required because PortAudio's WASAPI / WDM-KS
@@ -480,25 +482,35 @@ class WakeWordDetector:
         the same process. The daemon's start_recording() opens its
         own PyAudio stream, and if our wake stream is still live,
         the second Pa_OpenStream / Pa_ReadStream call segfaults
-        deep inside _portaudio.cp313-win_amd64.pyd
-        (0xc0000005 access violation, observed live 2026-05-21).
+        deep inside _portaudio.cp313-win_amd64.pyd.
 
-        Cost of the tear-down: ~150 ms on this hardware
-        (PyAudio.PyAudio() + open() roundtrip on resume()).
-        That's a small price for never crashing during normal
-        use.
+        Two crash addresses observed in this codebase:
+          - 0x9b7b: caused by a prewarm thread + wake listener
+            racing PaInitialize/PaTerminate at startup (fixed in
+            v0.6.8.dev3 by skipping prewarm when wake is on).
+          - 0x89c0: caused by start_recording() opening its own
+            PyAudio stream while the wake's pyaudio terminate
+            path was still in flight on the audio thread (fixed
+            here by making pause() synchronous: we now join the
+            audio thread before returning).
+
+        Cost: ~150-250 ms on this hardware (close + terminate +
+        thread join). Worth every ms; avoids a class of crashes
+        that previously killed the daemon every time the user
+        triggered a recording.
         """
         if self._paused.is_set():
             return
         self._paused.set()
         logger.debug("Wake-word listener pausing (closing audio stream).")
-        # Detach the audio thread by clearing the stream reference;
-        # the thread's read loop will hit a None stream and exit.
-        # Hold the lock briefly to avoid racing with the audio
-        # thread while it reads from self._stream.
+        # Capture the audio thread reference + clear the stream.
         with self._state_lock:
             stream = self._stream
             self._stream = None
+            audio_thread = self._audio_thread
+            self._audio_thread = None
+        # Close the stream first; the audio thread's read loop will
+        # then see self._stream == None and exit.
         if stream is not None:
             try:
                 stream.stop_stream()
@@ -507,14 +519,18 @@ class WakeWordDetector:
                 logger.exception(
                     "wake-word: stream.close raised during pause; "
                     "continuing anyway.")
-        # Wait briefly for the audio thread to notice the None
-        # stream and drop out. We can't join it here (we hold the
-        # state lock from start()), so we just give it a moment;
-        # if the thread is still running when resume() is called,
-        # resume() spawns a new audio thread regardless and the
-        # old one exits when it next checks self._stop_event.
-        # The pyaudio terminate() also belongs in pause so the
-        # underlying COM (WASAPI) reference is released cleanly.
+        # JOIN the audio thread so we know PortAudio's read path
+        # has fully exited before we call pa.terminate(). Without
+        # this join, terminate() can race a still-pending read
+        # and cause an access violation deep in _portaudio.pyd.
+        if audio_thread is not None and audio_thread.is_alive():
+            audio_thread.join(timeout=2.0)
+            if audio_thread.is_alive():
+                logger.warning(
+                    "wake-word audio thread did not exit within 2 s; "
+                    "proceeding with terminate anyway. May cause a "
+                    "transient PortAudio warning.")
+        # NOW it's safe to release the underlying PaInstance.
         try:
             if self._pyaudio_inst is not None:
                 self._pyaudio_inst.terminate()

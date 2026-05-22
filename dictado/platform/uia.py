@@ -41,7 +41,7 @@ Heuristics for picking the right Edit element
    search boxes).
 5. As a last resort, accept any focusable Edit/Document.
 
-The heuristics survive Amazon Quick, ChatGPT desktop, Claude desktop,
+The heuristics survive Quick AI, ChatGPT desktop, Claude desktop,
 Cursor, Slack, and Teams in spot checks. We document each step so
 adding a new app rarely needs a per-profile override.
 
@@ -243,7 +243,7 @@ def _pick_chat_input(edits: list[_UiaEdit],
          (ControlType=Edit, IsKeyboardFocusable=True, IsEnabled=True),
          pick it directly. Don't consult the rect at all -- Chromium
          occasionally returns stale / inverted bounding rects for live
-         input elements (we observed Amazon Quick reporting an Edit
+         input elements (we observed Quick AI reporting an Edit
          whose bottom edge was above its top), and a unique Edit is
          already a strong-enough signal that this is the chat input.
       B. If multiple Edits, score them with rect heuristics:

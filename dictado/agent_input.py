@@ -3,7 +3,7 @@
 Why this exists
 ---------------
 Vanilla auto-paste lands transcribed text in whatever has focus and
-stops there. For AI assistants (ChatGPT, Claude, Cursor, Amazon Quick,
+stops there. For AI assistants (ChatGPT, Claude, Cursor, Quick AI,
 etc.) and chat apps (Slack, Teams, Discord), the user's actual goal is
 "send the message", not "type it and stop".
 
@@ -90,7 +90,7 @@ class App:
     # apps where SetForegroundWindow alone doesn't guarantee that the
     # prompt input has keyboard focus -- the hook sends a small chord
     # (typically Ctrl+L, the conventional "focus prompt input" combo
-    # for ChatGPT desktop / Claude desktop / Cursor / Amazon Quick)
+    # for ChatGPT desktop / Claude desktop / Cursor / Quick AI)
     # that nudges focus onto the input field.
     post_activate: Callable[[], None] | None = None
     # Optional launch hints: ordered tuple of paths (or path templates
@@ -104,7 +104,7 @@ class App:
     # UIA Name property must match. Disambiguates from buttons,
     # search boxes, suggested-action chips that share the bottom
     # of the window. Examples:
-    #   amazon-quick:  r"^Ask a question"
+    #   quick-ai:  r"^Ask a question"
     #   chatgpt:       r"^Message ChatGPT"
     #   claude:        r"^Reply to "
     # When empty/None, the picker falls back to area + position
@@ -256,11 +256,11 @@ if sys.platform == "win32":
         sub-control was last focused (sidebar item, dropdown, etc.),
         the paste silently no-ops, and the user sees the window come
         forward with no text inserted -- exactly the symptom observed
-        with Amazon Quick.
+        with Quick AI.
 
         Ctrl+L is the cheapest portable focus hint that works across
         the major Electron AI apps (ChatGPT desktop, Claude desktop,
-        Cursor, Amazon Quick all bind it to "focus prompt" / "new
+        Cursor, Quick AI all bind it to "focus prompt" / "new
         chat", both of which leave the prompt input focused).
         """
         try:
@@ -289,7 +289,7 @@ if sys.platform == "win32":
     # --- UIA-based prompt-input focusing -------------------------------
     #
     # Ctrl+L works for ChatGPT desktop / Claude desktop / Cursor but
-    # does NOT reliably work for every Electron AI app (Amazon Quick
+    # does NOT reliably work for every Electron AI app (Quick AI
     # is the known counter-example). The proper fix is UI Automation:
     # walk the target window's accessibility tree, find the prompt
     # input by ControlType=Edit + IsKeyboardFocusable + the bottom-of-
@@ -425,10 +425,10 @@ if sys.platform == "win32":
          r"^(Reply to |Talk with |How can I help)"),
         ("copilot",      "Microsoft Copilot",  _profile_by_image("Copilot.exe", "ai.exe"), _focus_input_via_uia, (),
          r"^(Message|Ask)"),
-        ("amazon-quick", "Amazon Quick",       _profile_by_image("Amazon Quick.exe"),    _focus_input_via_uia,
-         (r"$PROGRAMFILES\Amazon Quick\Amazon Quick.exe",
-          r"$LOCALAPPDATA\Programs\Amazon Quick\Amazon Quick.exe",
-          r"$APPDATA\Microsoft\Windows\Start Menu\Programs\Amazon Quick.lnk"),
+        ("quick-ai", "Quick AI",       _profile_by_image("quick.exe"),    _focus_input_via_uia,
+         (r"$PROGRAMFILES\Quick AI\quick.exe",
+          r"$LOCALAPPDATA\Programs\Quick AI\quick.exe",
+          r"$APPDATA\Microsoft\Windows\Start Menu\Programs\QuickAI.lnk"),
          r"^Ask"),
         # IDEs / editors ----------------------------------------------
         ("cursor",       "Cursor",             _profile_by_image("Cursor.exe"),          _focus_input_via_uia,

@@ -4,6 +4,44 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## v0.6.5 - 2026-05-21
+
+Three wake-trigger fixes plus self-contained assets.
+
+### Wake-driven recording reliability
+
+Three races surfaced once wake-triggered recording was being used in
+earnest:
+
+* The audio-frame reset at the top of `start_recording` had drifted
+  inside the wake-only branch in v0.6.4. Hotkey recordings ended up
+  concatenating onto the prior run, and wake recordings read stale
+  frames so the silence-stop check always saw `rms_now` of zero. The
+  reset is back at the top, where every entry path hits it.
+
+* The wake cue was firing before the recording stream had opened, so
+  PyAudio's first samples landed during the cue's tail. Whisper
+  duly transcribed the cue itself (one example: "Thank you") into
+  the user's recording. The cue now plays first, the mic opens
+  `wake_sound_lead_s` seconds later (default 1.0). The leading
+  second of the cue is audible to the user and not present in the
+  recording at all.
+
+* `WakeWordDetector.pause()` had been closing the stream and tearing
+  down PyAudio without waiting for the audio thread to exit. When
+  `start_recording` came along and opened its own PyAudio, the two
+  raced and PortAudio crashed (offset 0x89c0). `pause()` now joins
+  the audio thread before terminating PyAudio.
+
+### Self-contained repo
+
+`assets/sounds/biboo-asmr-hello.m4a` and a synthesized
+`assets/sounds/chime.wav` ship with the repo. A new
+`dictado.paths.resolve_wake_sound()` helper resolves them relative to
+the package, so `git clone` to working install is one step. Custom
+wake sounds via `wake_sound_path` still work; an empty config falls
+back to the bundled cue.
+
 ## [0.6.4] -- 2026-05-22
 
 Wake-event silence auto-stop reliability + wake-sound playback

@@ -51,6 +51,13 @@ DEFAULTS = {
     # audio decoder works (.wav, .m4a, .mp3, .flac, .ogg, ...).
     "wake_sound_path":    "",
     "wake_sound_volume":  0.7,             # 0.0 - 1.0 (non-WAV formats only)
+    # Lead-in: the wake startup sound starts playing BEFORE the
+    # recording mic opens. This many seconds elapse between the
+    # cue starting and the mic going live, so the first part of
+    # the cue plays cleanly through speakers without bleeding
+    # into the recorded audio. 0.0 = open mic immediately
+    # (legacy v0.6.4 behaviour).
+    "wake_sound_lead_s":  1.0,
     # Wake-triggered recordings auto-stop after this many seconds of
     # continuous silence. 0 = disable (run to MAX_RECORD_SECONDS).
     "wake_silence_stop_s":         3.0,
@@ -201,6 +208,9 @@ def load() -> dict:
         wsr = on_disk.get("wake_silence_rms_threshold")
         if isinstance(wsr, (int, float)) and 0.0 <= wsr <= 1.0:
             cfg["wake_silence_rms_threshold"] = float(wsr)
+        wsl = on_disk.get("wake_sound_lead_s")
+        if isinstance(wsl, (int, float)) and 0.0 <= wsl <= 5.0:
+            cfg["wake_sound_lead_s"] = float(wsl)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     save(cfg)

@@ -65,6 +65,7 @@ from .platform import adapter as _platform_adapter
 from .archive import archive_recording, default_archive_dir
 from . import agent_input as _aim
 from . import wake_word as _wake
+from . import paths as _paths
 
 # Wake-word detector instance, lazily started when the user enables
 # the feature from the tray menu. None when wake-word is OFF.
@@ -85,6 +86,16 @@ _recording_was_wake_triggered = False
 # phrase, so it captures their actual speaking
 # volume on this mic in this room).
 WAKE_SILENCE_RATIO = 0.35
+
+# Grace period at the start of a wake-triggered recording during
+# which the silence-auto-stop check is suspended. This covers
+# the duration of the wake-startup sound (typical: 1-2 s) plus
+# a small margin for the sound's tail / mic-bleed reverb. Without
+# this, the cue's echo can register as voice and either
+# (a) reset _last_voice_time on every frame, or
+# (b) get treated as a voice baseline that artificially raises
+# the silence threshold.
+WAKE_SOUND_GRACE_S = 2.0
 from . import models as _models
 
 _plat = _platform_adapter()
@@ -259,11 +270,19 @@ def _play_wake_sound() -> None:
         cfg = _cfg.load()
     except Exception:
         return
-    path = (cfg.get("wake_sound_path") or "").strip()
+    requested = (cfg.get("wake_sound_path") or "").strip()
+    # Resolve through paths.resolve_wake_sound so an empty config
+    # value (or a missing/erased file) falls back to the bundled
+    # default at assets/sounds/biboo-asmr-hello.m4a, then to
+    # assets/sounds/chime.wav. Returns None only if the repo is
+    # missing the assets folder, which we treat as "user
+    # explicitly disabled the cue".
+    path = _paths.resolve_wake_sound(requested)
     if not path:
         return
     if not os.path.exists(path):
-        logger.warning("wake_sound_path %r does not exist; skipping.", path)
+        logger.warning("wake-sound resolved to %r but file missing; "
+                       "skipping.", path)
         return
     try:
         volume = float(cfg.get("wake_sound_volume", 0.7))
@@ -552,28 +571,50 @@ def start_recording() -> None:
         try: wake_detector.pause()
         except Exception: logger.exception("wake_detector.pause raised.")
 
-    # Wake-event extras (sound + silence auto-stop). Both are gated on
+    # Wake-event extras: sound + silence auto-stop. Both gated on
     # _recording_was_wake_triggered so the hotkey path keeps its
     # exact previous behaviour.
+    #
+    # NEW (v0.6.5): the cue plays BEFORE the recording mic opens,
+    # then we sleep `wake_sound_lead_s` seconds before opening the
+    # stream. By default the cue starts playing through speakers
+    # 1.0 s before the mic goes live; that 1.0 s of cue is NEVER
+    # captured in the recording, so the user gets a clean
+    # "I heard you" confirmation followed by a clean recording.
+    # WAKE_SOUND_GRACE_S still suppresses any cue tail that bleeds
+    # past the lead-in.
+    #
+    # CRITICAL: the audio_frames reset + state init runs for EVERY
+    # entry to start_recording (was: only inside the wake-only
+    # branch in v0.6.4, which broke hotkey recordings).
     wake_triggered = _recording_was_wake_triggered
     if wake_triggered:
-        _play_wake_sound()
-        recording = True
-        audio_frames = []
-        _last_partial_frame_count = 0
-        recording_started_at = datetime.now()
-        foreground_token = _plat.get_foreground_window()
-        logger.info("Recording started. focus_token=%s", foreground_token)
+        try:
+            cfg_now = _cfg.load()
+            lead_s = float(cfg_now.get("wake_sound_lead_s", 1.0))
+        except Exception:
+            lead_s = 1.0
+        threading.Thread(target=_play_wake_sound, daemon=True,
+                         name="wake-cue").start()
+        if lead_s > 0:
+            time.sleep(min(5.0, max(0.0, lead_s)))
 
-        status_text = "Recording..."
-        _update_icon_tooltip()
-        _update_tray_icon("red")
-        _popup("show")
-        _popup("status", "Recording")
+    recording = True
+    audio_frames = []
+    _last_partial_frame_count = 0
+    recording_started_at = datetime.now()
+    foreground_token = _plat.get_foreground_window()
+    logger.info("Recording started. focus_token=%s", foreground_token)
 
-        pa = pyaudio.PyAudio()
-        stream = pa.open(format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
-                         input=True, frames_per_buffer=CHUNK)
+    status_text = "Recording..."
+    _update_icon_tooltip()
+    _update_tray_icon("red")
+    _popup("show")
+    _popup("status", "Recording")
+
+    pa = pyaudio.PyAudio()
+    stream = pa.open(format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
+                     input=True, frames_per_buffer=CHUNK)
 
     def _record_loop(_pa, _stream):
         global recording
@@ -627,7 +668,21 @@ def start_recording() -> None:
                     except Exception:
                         silence_stop_s, silence_rms_floor = 3.0, 0.030
 
-                    if silence_stop_s > 0 and len(audio_frames) > 0:
+                    # Grace period: skip silence checks AND voice-baseline
+                    # sampling for the first WAKE_SOUND_GRACE_S of the
+                    # recording. The wake-startup sound is playing through
+                    # the speakers during this window; the mic is hearing
+                    # both the user and the cue, and we don't want either
+                    # to corrupt the silence-stop logic. _last_voice_time
+                    # is bumped to NOW so when the grace expires, the
+                    # silence countdown starts fresh.
+                    elapsed = time.time() - start_time
+                    if elapsed < WAKE_SOUND_GRACE_S:
+                        _last_voice_time = time.time()
+                        # Note: not break/continue here; we still need
+                        # to fall through to the audio-read at the
+                        # bottom of the loop body below.
+                    elif silence_stop_s > 0 and len(audio_frames) > 0:
                         tail = audio_frames[-1]
                         arr = (np.frombuffer(tail, dtype=np.int16)
                                  .astype(np.float32) / 32768.0)
