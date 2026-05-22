@@ -223,7 +223,7 @@ def _update_icon_tooltip() -> None:
     if icon is not None:
         m = current_model_name or "?"
         ap = "on" if autopaste_enabled else "off"
-        icon.title = f"dictado — {status_text} [{m}, autopaste {ap}]"
+        icon.title = f"Dictado — {status_text} [{m}, autopaste {ap}]"
 
 
 def _update_tray_icon(color: str) -> None:
@@ -1101,7 +1101,7 @@ def main() -> None:
         _start_wake_detector_async()
 
     icon = Icon("dictado", _create_icon_image("gray"),
-                title="dictado - starting...", menu=_build_tray_menu())
+                title="Dictado - starting...", menu=_build_tray_menu())
     try:
         logger.info("Tray loop starting.")
         icon.run()

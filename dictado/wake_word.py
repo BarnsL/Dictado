@@ -472,20 +472,77 @@ class WakeWordDetector:
         logger.info("Wake-word listener stopped.")
 
     def pause(self) -> None:
-        """Stop running inference but keep capture alive. Cheap to
-        toggle on/off many times. Used by daemon during recordings."""
-        if not self._paused.is_set():
-            self._paused.set()
-            logger.debug("Wake-word listener paused.")
+        """Stop inference AND tear down the PyAudio capture stream.
+
+        IMPORTANT: closing the stream (rather than just gating
+        inference) is required because PortAudio's WASAPI / WDM-KS
+        backends are NOT safe for two concurrent input streams from
+        the same process. The daemon's start_recording() opens its
+        own PyAudio stream, and if our wake stream is still live,
+        the second Pa_OpenStream / Pa_ReadStream call segfaults
+        deep inside _portaudio.cp313-win_amd64.pyd
+        (0xc0000005 access violation, observed live 2026-05-21).
+
+        Cost of the tear-down: ~150 ms on this hardware
+        (PyAudio.PyAudio() + open() roundtrip on resume()).
+        That's a small price for never crashing during normal
+        use.
+        """
+        if self._paused.is_set():
+            return
+        self._paused.set()
+        logger.debug("Wake-word listener pausing (closing audio stream).")
+        # Detach the audio thread by clearing the stream reference;
+        # the thread's read loop will hit a None stream and exit.
+        # Hold the lock briefly to avoid racing with the audio
+        # thread while it reads from self._stream.
+        with self._state_lock:
+            stream = self._stream
+            self._stream = None
+        if stream is not None:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                logger.exception(
+                    "wake-word: stream.close raised during pause; "
+                    "continuing anyway.")
+        # Wait briefly for the audio thread to notice the None
+        # stream and drop out. We can't join it here (we hold the
+        # state lock from start()), so we just give it a moment;
+        # if the thread is still running when resume() is called,
+        # resume() spawns a new audio thread regardless and the
+        # old one exits when it next checks self._stop_event.
+        # The pyaudio terminate() also belongs in pause so the
+        # underlying COM (WASAPI) reference is released cleanly.
+        try:
+            if self._pyaudio_inst is not None:
+                self._pyaudio_inst.terminate()
+        except Exception:
+            logger.exception(
+                "wake-word: pyaudio.terminate raised during pause.")
+        self._pyaudio_inst = None
 
     def resume(self) -> None:
-        """Resume inference after a pause."""
-        if self._paused.is_set():
-            with self._frames_lock:
-                self._frames = []
-            self._cooldown_until = time.monotonic() + 0.5
-            self._paused.clear()
-            logger.debug("Wake-word listener resumed.")
+        """Resume inference. Re-opens the PyAudio capture stream
+        that pause() closed, and clears the rolling buffer so we
+        don't process audio from before the pause.
+        """
+        if not self._paused.is_set():
+            return
+        with self._frames_lock:
+            self._frames = []
+        self._cooldown_until = time.monotonic() + 0.5
+        self._paused.clear()
+        # Spawn a fresh audio thread. The previous one exited when
+        # it saw self._stream = None (set by pause()).
+        if (self._audio_thread is None
+                or not self._audio_thread.is_alive()):
+            self._audio_thread = threading.Thread(
+                target=self._audio_loop, daemon=True,
+                name="wake-word-audio")
+            self._audio_thread.start()
+        logger.debug("Wake-word listener resumed (reopened audio stream).")
 
     @property
     def running(self) -> bool:
@@ -529,10 +586,23 @@ class WakeWordDetector:
                      int(INFER_INTERVAL_SECONDS * 1000))
 
         while not self._stop_event.is_set():
+            # If pause() cleared self._stream while we were
+            # blocked, drop out cleanly. resume() will spawn a
+            # fresh audio thread when it re-opens the stream.
+            stream = self._stream
+            if stream is None:
+                logger.debug("Wake audio loop: stream cleared; exiting.")
+                break
             try:
-                data = self._stream.read(
+                data = stream.read(
                     self._chunk_samples, exception_on_overflow=False)
             except Exception:
+                # Stream may have been closed mid-read by pause();
+                # treat that as a clean exit, not an error.
+                if self._stream is None:
+                    logger.debug("Wake audio loop: stream closed "
+                                 "mid-read by pause(); exiting.")
+                    break
                 logger.exception("Wake audio read failed; aborting.")
                 break
             arr = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0

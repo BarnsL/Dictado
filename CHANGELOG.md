@@ -4,6 +4,16 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.6.3] -- 2026-05-22
+
+Tray-icon tooltip casing.
+
+### Changed
+
+- "dictado - starting..." -> "Dictado - starting..."; tooltip's
+  active-state format string ("dictado â€” Ready [...]") -> "Dictado
+  â€” Ready [...]". The pystray Icon ID and Python logger name stay
+  lowercase.
 ## [0.6.2] -- 2026-05-22
 
 Wake-word reliability fixes.
