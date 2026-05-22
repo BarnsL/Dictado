@@ -519,30 +519,31 @@ class WakeWordDetector:
                 logger.exception(
                     "wake-word: stream.close raised during pause; "
                     "continuing anyway.")
-        # JOIN the audio thread so we know PortAudio's read path
-        # has fully exited before we call pa.terminate(). Without
-        # this join, terminate() can race a still-pending read
-        # and cause an access violation deep in _portaudio.pyd.
+        # JOIN the audio thread (best effort) so the read loop has
+        # noticed self._stream = None and bailed out. We do NOT
+        # call pa.terminate() from pause() any more: that's what
+        # was racing with the audio thread's still-pending
+        # Pa_ReadStream and corrupting the heap (ntdll 0xaa73,
+        # observed 2026-05-21 22:16). The PyAudio instance stays
+        # alive for the wake detector's lifetime; only stop()
+        # tears it down.
         if audio_thread is not None and audio_thread.is_alive():
             audio_thread.join(timeout=2.0)
             if audio_thread.is_alive():
                 logger.warning(
-                    "wake-word audio thread did not exit within 2 s; "
-                    "proceeding with terminate anyway. May cause a "
-                    "transient PortAudio warning.")
-        # NOW it's safe to release the underlying PaInstance.
-        try:
-            if self._pyaudio_inst is not None:
-                self._pyaudio_inst.terminate()
-        except Exception:
-            logger.exception(
-                "wake-word: pyaudio.terminate raised during pause.")
-        self._pyaudio_inst = None
+                    "wake-word audio thread still alive after 2 s; "
+                    "leaving PyAudio instance live (avoids terminate "
+                    "race). Resume() will reuse it when the user "
+                    "stops the recording.")
 
     def resume(self) -> None:
         """Resume inference. Re-opens the PyAudio capture stream
         that pause() closed, and clears the rolling buffer so we
         don't process audio from before the pause.
+
+        v0.6.6: pause() no longer terminates self._pyaudio_inst, so
+        resume() reuses the existing instance. _audio_loop opens
+        the new stream against it.
         """
         if not self._paused.is_set():
             return
@@ -551,7 +552,8 @@ class WakeWordDetector:
         self._cooldown_until = time.monotonic() + 0.5
         self._paused.clear()
         # Spawn a fresh audio thread. The previous one exited when
-        # it saw self._stream = None (set by pause()).
+        # it saw self._stream = None (set by pause()). It opens its
+        # own stream off the existing self._pyaudio_inst.
         if (self._audio_thread is None
                 or not self._audio_thread.is_alive()):
             self._audio_thread = threading.Thread(

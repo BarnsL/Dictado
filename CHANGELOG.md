@@ -4,6 +4,38 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## v0.6.6 - 2026-05-21
+
+Two follow-ups to v0.6.5: a heap-corruption crash and a baseline
+regression caused by the new lead-in.
+
+### pause() drops the pa.terminate() call
+
+The 'synchronous pause' shipped in v0.6.5 still raced. When the
+wake detector's audio thread was inside `Pa_ReadStream`, our 2-second
+join timed out and we called `pa.terminate()` while the read was
+still pending. PortAudio dropped its internal buffers, the read wrote
+into freed memory, and ntdll caught the corruption with a 0xaa73
+access violation.
+
+`pause()` now closes the stream and joins the audio thread on a
+best-effort basis, but it never terminates the PyAudio instance.
+That instance stays alive for the detector's lifetime; only the
+process-shutdown `stop()` path tears it down. Two streams briefly
+coexisting during `start_recording` isn't actually a problem on
+WASAPI shared mode -- the original v0.6.3 crash was about
+`Pa_Initialize` / `Pa_Terminate` ordering, not concurrent reads.
+
+### Voice baseline samples second-2 of the recording
+
+With a 1 s lead-in before the mic opens, the first second of the
+recording is silence (the user is waiting for the cue to play). The
+baseline calibration read 0.000 RMS, fell back to the static floor,
+and the silence-stop fired on the next frame.
+
+Baseline now samples chunks 1-2 s instead of 0-1 s, picking up the
+user's real speaking volume after the cue.
+
 ## v0.6.5 - 2026-05-21
 
 Three wake-trigger fixes plus self-contained assets.

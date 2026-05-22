@@ -689,13 +689,22 @@ def start_recording() -> None:
                         rms_now = (float(np.sqrt(np.mean(arr * arr)))
                                    if arr.size else 0.0)
 
-                        # Build the voice-volume baseline once we have
-                        # ~1 s of audio. SAMPLE_RATE / CHUNK = chunks
-                        # per second.
-                        chunks_for_baseline = max(1, SAMPLE_RATE // CHUNK)
+                        # Build the voice-volume baseline from the
+                        # SECOND second of the recording (chunks
+                        # 16-31 inclusive at 16 kHz / 1024-sample
+                        # chunks). The first second can be silence
+                        # because the user just said the wake phrase
+                        # and is listening for the cue / waiting to
+                        # speak. Sampling that as "voice baseline"
+                        # gives near-zero RMS and the silence-stop
+                        # fires immediately. Sampling second-2
+                        # captures the user's actual speech.
+                        chunks_per_sec = max(1, SAMPLE_RATE // CHUNK)
+                        baseline_start = chunks_per_sec
+                        baseline_end = chunks_per_sec * 2
                         if (_wake_voice_baseline_rms == 0.0
-                                and len(audio_frames) >= chunks_for_baseline):
-                            sample = audio_frames[:chunks_for_baseline]
+                                and len(audio_frames) >= baseline_end):
+                            sample = audio_frames[baseline_start:baseline_end]
                             sample_arr = (np.frombuffer(b"".join(sample),
                                             dtype=np.int16)
                                             .astype(np.float32) / 32768.0)
@@ -705,13 +714,15 @@ def start_recording() -> None:
                                 logger.info(
                                     "wake-stop: voice baseline rms=%.3f "
                                     "(threshold floor=%.3f, ratio=%.2f -> "
-                                    "effective threshold=%.3f)",
+                                    "effective threshold=%.3f) "
+                                    "[sampled chunks %d-%d]",
                                     _wake_voice_baseline_rms,
                                     silence_rms_floor,
                                     WAKE_SILENCE_RATIO,
                                     max(silence_rms_floor,
                                         _wake_voice_baseline_rms
-                                        * WAKE_SILENCE_RATIO))
+                                        * WAKE_SILENCE_RATIO),
+                                    baseline_start, baseline_end)
 
                         # Pick the larger of the static floor and the
                         # baseline-relative threshold. If baseline isn't

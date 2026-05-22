@@ -15,4 +15,4 @@ Run as a script:
     python -m dictado           # start the daemon (foreground)
     python -m dictado --toggle  # IPC: toggle recording in a running daemon
 """
-__version__ = "0.6.5"
+__version__ = "0.6.6"
