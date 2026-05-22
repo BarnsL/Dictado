@@ -95,6 +95,45 @@ TRIGGER_POLL_SECONDS = 0.25
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logger = logging.getLogger("dictado")
+
+
+def _suppress_subprocess_consoles_on_windows() -> None:
+    """Default subprocess.Popen to CREATE_NO_WINDOW on Windows.
+
+    Why this exists: when pythonw.exe spawns a child via subprocess
+    (us, or any dependency like whisper.audio.load_audio's ffmpeg
+    call) without explicit creationflags, Windows briefly creates a
+    console window for the child. Even if the child is a GUI app,
+    the console flashes for a fraction of a second.
+
+    DETACHED_PROCESS alone doesn't suppress this; CREATE_NO_WINDOW
+    does. We monkey-patch Popen to OR CREATE_NO_WINDOW into
+    creationflags by default, while still letting callers opt out
+    by passing creationflags explicitly (the patch only applies
+    when creationflags isn't already set).
+    """
+    if sys.platform != "win32":
+        return
+    import subprocess as _sp
+    if getattr(_sp.Popen, "_dictado_no_window_patched", False):
+        return
+    CREATE_NO_WINDOW = 0x08000000
+    _orig_init = _sp.Popen.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        # Only inject the flag if the caller didn't specify creationflags.
+        # That way callers who DO want a console (e.g. for diagnostics)
+        # still get one.
+        if "creationflags" not in kwargs or kwargs["creationflags"] is None:
+            kwargs["creationflags"] = CREATE_NO_WINDOW
+        else:
+            kwargs["creationflags"] |= CREATE_NO_WINDOW
+        return _orig_init(self, *args, **kwargs)
+
+    _sp.Popen.__init__ = _patched_init
+    _sp.Popen._dictado_no_window_patched = True
+    logger.debug("subprocess.Popen patched to default to CREATE_NO_WINDOW.")
+
 logger.setLevel(logging.INFO)
 _handler = RotatingFileHandler(_cfg.log_path(), maxBytes=512 * 1024,
                                backupCount=3, encoding="utf-8")
@@ -437,7 +476,16 @@ def stop_recording() -> None:
             wf.setframerate(SAMPLE_RATE); wf.writeframes(b"".join(audio_frames))
 
         with model_lock:
-            result = model.transcribe(tmp_path, language=language,
+            # Pass an in-memory ndarray instead of the tmp WAV path. Whisper's
+            # transcribe(path) calls whisper.audio.load_audio(path) which
+            # shells out to ffmpeg, and on pythonw.exe that subprocess
+            # briefly flashes a console window. We already have the raw
+            # audio as int16 frames; converting to float32 normalised in
+            # Python skips the redundant ffmpeg decode AND eliminates the
+            # console flash. The tmp WAV file is still written (the
+            # audio archive depends on it).
+            audio_np = _frames_to_float32(audio_frames)
+            result = model.transcribe(audio_np, language=language,
                                        fp16=WHISPER_FP16)
         text = (result.get("text") or "").strip()
 
@@ -785,6 +833,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    # Suppress brief console flashes from any subprocess child
+    # (whisper's ffmpeg decode, agent_input launch_target, etc.)
+    # before any subprocess work happens. No-op on non-Windows.
+    _suppress_subprocess_consoles_on_windows()
     global icon, autopaste_enabled, popup_enabled, language
 
     args = parse_args()

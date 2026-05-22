@@ -4,6 +4,26 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.5.7] -- 2026-05-22
+
+No more console flash on recording end.
+
+### Fixed
+
+- **`whisper.audio.load_audio()`\'s ffmpeg subprocess no longer
+  flashes a console window.** Root cause: the final-transcription
+  path was writing a tmp WAV and calling `model.transcribe(path)`,
+  which goes through `whisper.audio.load_audio(path)` -> `ffmpeg
+  -i path ...` as a subprocess. On `pythonw.exe`, child
+  subprocesses without `CREATE_NO_WINDOW` briefly flash a console.
+  Fix: pass a numpy array directly to `model.transcribe()` -- we
+  already have the audio as int16 frames, so the in-Python
+  conversion is faster than re-decoding via ffmpeg anyway. The
+  tmp WAV write stays for the audio archive.
+- **Belt-and-braces.** New `_suppress_subprocess_consoles_on_windows()`
+  monkey-patches `subprocess.Popen` at startup to default to
+  `CREATE_NO_WINDOW`. Catches any other dependency that might
+  spawn a console child now or later.
 ## [0.5.6] -- 2026-05-22
 
 Cold-launch AIM paste now matches the right element in the a11y tree.
