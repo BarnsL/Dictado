@@ -1302,6 +1302,9 @@ def _build_tray_menu() -> Menu:
         MenuItem('Voice activation ("Hey Bijou" / "Hey Biboo" ...)',
                  _toggle_wake_word, checked=_is_wake_word_enabled),
         Menu.SEPARATOR,
+        MenuItem(f'Choose Input Device  ({_current_microphone_label()})',
+                 _build_microphone_submenu()),
+        Menu.SEPARATOR,
         MenuItem("Quit", _quit_daemon),
     )
 
