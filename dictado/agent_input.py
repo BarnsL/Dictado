@@ -268,6 +268,55 @@ if sys.platform == "win32":
             logger.warning("Ctrl+L SendInput injected %d/4 events.", n)
 
 
+    # --- UIA-based prompt-input focusing -------------------------------
+    #
+    # Ctrl+L works for ChatGPT desktop / Claude desktop / Cursor but
+    # does NOT reliably work for every Electron AI app (Amazon Quick
+    # is the known counter-example). The proper fix is UI Automation:
+    # walk the target window's accessibility tree, find the prompt
+    # input by ControlType=Edit + IsKeyboardFocusable + the bottom-of-
+    # window heuristic, then call IUIAutomationElement.SetFocus().
+    #
+    # We share the target HWND between activate_target() and the
+    # post_activate hook via a threading.local. The hook runs on the
+    # same thread that called activate_target (the daemon's
+    # stop_recording thread), so the local is the right shape.
+
+    import threading as _threading
+    _aim_local = _threading.local()
+
+
+    def _focus_input_via_uia() -> None:
+        """post_activate hook: use UIA to focus the chat input under
+        the HWND set by activate_target. Falls back to _send_ctrl_l
+        if UIA can't find the input -- some apps still respond to the
+        chord even when their accessibility tree doesn't expose the
+        input cleanly."""
+        hwnd = getattr(_aim_local, "hwnd", 0)
+        if not hwnd:
+            logger.debug("_focus_input_via_uia: no hwnd in thread-local; "
+                         "skipping.")
+            return
+        try:
+            from dictado.platform.uia import focus_chat_input
+        except Exception:
+            logger.exception("UIA helper unavailable; falling back to "
+                             "Ctrl+L.")
+            _send_ctrl_l()
+            return
+        try:
+            ok = focus_chat_input(hwnd, timeout_s=0.6)
+        except Exception:
+            logger.exception("focus_chat_input raised on hwnd 0x%08X; "
+                             "falling back to Ctrl+L.", hwnd)
+            _send_ctrl_l()
+            return
+        if not ok:
+            logger.info("UIA could not focus a chat input under hwnd "
+                        "0x%08X; falling back to Ctrl+L.", hwnd)
+            _send_ctrl_l()
+
+
     # --- App profiles ---------------------------------------------------
     # Each profile carries:
     #   detect()        -> bool : True iff there's a live window for the app
@@ -292,14 +341,19 @@ if sys.platform == "win32":
         return _detect, _activate, _locate
 
     # Each row: (id, label, _profile_pair) OR (id, label, _profile_pair, post_activate)
+    #
+    # _focus_input_via_uia is the production focus-the-chat-input hook;
+    # it tries UIA's IUIAutomationElement.SetFocus() first and falls
+    # back to a Ctrl+L chord if UIA can't find a plausible Edit. Wire
+    # it for every Electron AI app that has WebContents-focus issues.
     _PROFILES_RAW: list[tuple] = [
         # AI assistants ------------------------------------------------
-        ("chatgpt",      "ChatGPT (desktop)",  _profile_by_image("ChatGPT.exe"),         _send_ctrl_l),
-        ("claude",       "Claude (desktop)",   _profile_by_image("Claude.exe"),          _send_ctrl_l),
-        ("copilot",      "Microsoft Copilot",  _profile_by_image("Copilot.exe", "ai.exe"), _send_ctrl_l),
-        ("amazon-quick", "Amazon Quick",       _profile_by_image("Amazon Quick.exe"),    _send_ctrl_l),
+        ("chatgpt",      "ChatGPT (desktop)",  _profile_by_image("ChatGPT.exe"),         _focus_input_via_uia),
+        ("claude",       "Claude (desktop)",   _profile_by_image("Claude.exe"),          _focus_input_via_uia),
+        ("copilot",      "Microsoft Copilot",  _profile_by_image("Copilot.exe", "ai.exe"), _focus_input_via_uia),
+        ("amazon-quick", "Amazon Quick",       _profile_by_image("Amazon Quick.exe"),    _focus_input_via_uia),
         # IDEs / editors ----------------------------------------------
-        ("cursor",       "Cursor",             _profile_by_image("Cursor.exe"),          _send_ctrl_l),
+        ("cursor",       "Cursor",             _profile_by_image("Cursor.exe"),          _focus_input_via_uia),
         ("vscode",       "Visual Studio Code", _profile_by_image("Code.exe")),
         ("vscode_insiders", "VS Code Insiders",_profile_by_image("Code - Insiders.exe")),
         ("kiro",         "Kiro",               _profile_by_image("Kiro.exe")),
@@ -403,21 +457,31 @@ if sys.platform == "win32":
             if ok:
                 time.sleep(min(0.25, max(0.05, timeout_s)))
                 if app.post_activate is not None:
+                    _aim_local.hwnd = hwnd
                     try:
                         app.post_activate()
                     except Exception:
                         logger.exception(
                             "post_activate() raised for %r.", app_id)
+                    finally:
+                        _aim_local.hwnd = 0
                     time.sleep(0.12)
                 return hwnd
             return 0
         if focus_window(hwnd, timeout_s=timeout_s):
             if app.post_activate is not None:
+                # Share the target HWND with the hook via thread-local
+                # so the UIA path knows which window to walk. Cleared
+                # afterwards so a stale hwnd can't leak between AIM
+                # invocations.
+                _aim_local.hwnd = hwnd
                 try:
                     app.post_activate()
                 except Exception:
                     logger.exception(
                         "post_activate() raised for %r.", app_id)
+                finally:
+                    _aim_local.hwnd = 0
                 time.sleep(0.12)
             return hwnd
         logger.warning("activate_target(%r): focus_window did not transfer "

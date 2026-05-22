@@ -4,6 +4,41 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.5.3] -- 2026-05-22
+
+AIM paste reliably reaches Electron AI app chat inputs.
+
+### Fixed
+
+- **The AIM-into-Electron-input bug** documented in
+  `docs/ISSUE_aim-electron-paste.md` is now resolved for the four
+  shipped profiles (ChatGPT desktop, Claude desktop, Microsoft Copilot,
+  Cursor). New module `dictado/platform/uia.py` walks the target's
+  accessibility tree via UI Automation and calls
+  `IUIAutomationElement.SetFocus()` on the Edit element identified as
+  the chat input, BEFORE Dictado's existing `SendInput` Ctrl+V chord
+  fires. UIA threads through Chromium's accessibility integration and
+  reliably moves the inner WebContents focus -- which is what Ctrl+L
+  alone could not guarantee.
+- **Element-picking heuristic** documented in `uia.py`:
+  - hard-prefer `ControlType=Edit` over `ControlType=Document`;
+  - if exactly one focusable+enabled Edit is in the tree, pick it
+    without rect heuristics (Chromium occasionally returns stale or
+    inverted bounding rects on live inputs);
+  - otherwise filter by area (no more than 30% of the window) and
+    bottom-fraction location, then take the smallest.
+- **Fallback chain unchanged**: when UIA cannot find a plausible
+  input, the v0.5.2 Ctrl+L chord still fires as a backup focus hint.
+
+### Notes
+
+- Zero new third-party dependencies. `comtypes` is already pulled in
+  transitively by `pystray`.
+- UIA is the Microsoft accessibility API every screen-reader uses.
+  Read-only tree walks plus one `SetFocus()` call per dictation; no
+  input injection beyond the pre-existing single Ctrl+V chord. The
+  endpoint-protection mapping in `docs/SECURITY.md` continues to
+  apply.
 ## [0.5.2] -- 2026-05-22
 
 One-click launchers, no code changes.

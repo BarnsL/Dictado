@@ -1,5 +1,20 @@
 # Issue: AIM paste reaches the target window but not its input field
 
+
+> **Resolved in v0.5.3.** New module `dictado/platform/uia.py` performs UI
+> Automation `IUIAutomationElement.SetFocus()` on the chat input
+> before the daemon's `SendInput` Ctrl+V chord fires. UIA threads
+> through Chromium's accessibility integration and reliably moves
+> the inner WebContents focus -- which is what the v0.5.2 / v0.6.3
+> Ctrl+L workaround could not guarantee. The Ctrl+L chord stays as
+> a fallback when UIA can't find a plausible input. Smoke test
+> verified end-to-end. See the CHANGELOG entry for the picking
+> heuristic. The doc below is preserved as a record of the
+> investigation.
+
+---
+
+
 **Status:** Open  
 **Severity:** High (intermittent across AIM Electron-app targets)  
 **Affected component:** `dictado.agent_input` + `dictado.platform.windows`  
