@@ -71,6 +71,7 @@ endpoint-protection mapping.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -232,7 +233,8 @@ def _abs_area(e: _UiaEdit) -> float:
 
 
 def _pick_chat_input(edits: list[_UiaEdit],
-                     window_rect: tuple[int, int, int, int] | None
+                     window_rect: tuple[int, int, int, int] | None,
+                     name_regex: "re.Pattern | None" = None,
                      ) -> _UiaEdit | None:
     """Pick the Edit/Document most likely to be the chat input.
 
@@ -259,6 +261,24 @@ def _pick_chat_input(edits: list[_UiaEdit],
     ]
     if not plausible:
         return None
+
+    # Profile-supplied name regex: hard-filter to elements whose
+    # `Name` property matches. AQ's chat input is named
+    # "Ask a question..."; ChatGPT desktop's is "Message ChatGPT" or
+    # similar. The regex eliminates ambiguity when the landing page
+    # has multiple focusable elements (suggested-action buttons,
+    # search boxes, etc.).
+    if name_regex is not None:
+        named = [e for e in plausible if e.name and name_regex.search(e.name)]
+        if named:
+            plausible = named
+        # If no element matches the regex, do NOT fall back to
+        # generic heuristics; return None so the caller can wait or
+        # fall back to Ctrl+L. Returning a generic match here is
+        # what caused the "wait_for_chat_input thought it succeeded
+        # but pasted on a button" regression.
+        else:
+            return None
 
     # ---- A. Unique focusable Edit -> pick it without rect checks. -----
     edits_only = [e for e in plausible if e.control_type == UIA_CTRL_EDIT]
@@ -339,7 +359,9 @@ def list_edits(hwnd: int) -> list[dict]:
 
 def wait_for_chat_input(hwnd: int, *,
                         deadline_s: float = 8.0,
-                        poll_s: float = 0.25) -> bool:
+                        poll_s: float = 0.25,
+                        name_regex: "re.Pattern | None" = None,
+                        set_focus: bool = False) -> bool:
     """Block until the target window's UIA tree exposes a plausible
     chat input (focusable Edit picked by `_pick_chat_input`), or until
     `deadline_s` elapses. Returns True if found.
@@ -364,7 +386,9 @@ def wait_for_chat_input(hwnd: int, *,
         return False
 
     deadline = time.monotonic() + max(0.5, deadline_s)
+    iteration = 0
     while time.monotonic() < deadline:
+        iteration += 1
         try:
             root = uia.ElementFromHandle(hwnd)
         except Exception:
@@ -373,11 +397,49 @@ def wait_for_chat_input(hwnd: int, *,
             walker = uia.RawViewWalker
             edits: list[_UiaEdit] = []
             _walk_for_edits(uia, walker, root, edits)
-            if edits and _pick_chat_input(edits, _window_client_rect(hwnd)):
-                logger.info("wait_for_chat_input(0x%08X): chat input "
-                            "appeared in %.2fs",
-                            hwnd, deadline_s - (deadline - time.monotonic()))
-                return True
+            n_focusable = sum(1 for e in edits
+                              if e.keyboard_focusable and e.enabled)
+            n_named = sum(1 for e in edits if e.name and e.name.strip())
+            logger.debug(
+                "wait_for_chat_input(0x%08X) poll #%d: tree has %d "
+                "Edit/Document elements (%d focusable, %d named).",
+                hwnd, iteration, len(edits), n_focusable, n_named)
+            if edits:
+                target = _pick_chat_input(
+                    edits, _window_client_rect(hwnd), name_regex=name_regex)
+                if target is not None:
+                    logger.info(
+                        "wait_for_chat_input(0x%08X): chat input %r "
+                        "appeared in %.2fs",
+                        hwnd, target.name,
+                        deadline_s - (deadline - time.monotonic()))
+                    if set_focus:
+                        try:
+                            target.element.SetFocus()
+                        except Exception:
+                            logger.exception(
+                                "wait_for_chat_input: SetFocus raised; "
+                                "caller should fall back.")
+                            return False
+                        # Verify focus actually transferred.
+                        for _ in range(20):
+                            try:
+                                focused = uia.GetFocusedElement()
+                            except Exception:
+                                focused = None
+                            if focused is not None:
+                                try:
+                                    if uia.CompareElements(focused, target.element):
+                                        return True
+                                except Exception:
+                                    pass
+                            time.sleep(_FOCUS_VERIFY_INTERVAL_S)
+                        logger.warning(
+                            "wait_for_chat_input(0x%08X): SetFocus issued "
+                            "but focus did not transfer to %r within ~0.5s.",
+                            hwnd, target.name)
+                        return False
+                    return True
         time.sleep(poll_s)
 
     logger.warning("wait_for_chat_input(0x%08X): no chat-input candidate "
@@ -386,7 +448,8 @@ def wait_for_chat_input(hwnd: int, *,
 
 
 def focus_chat_input(hwnd: int, *,
-                     timeout_s: float = _DEFAULT_TIMEOUT_S) -> bool:
+                     timeout_s: float = _DEFAULT_TIMEOUT_S,
+                     name_regex: "re.Pattern | None" = None) -> bool:
     """Move keyboard focus to the chat input under HWND. Returns True
     on success, False if no plausible input was found, SetFocus failed,
     or focus didn't transfer within `timeout_s`.
@@ -420,7 +483,8 @@ def focus_chat_input(hwnd: int, *,
                     "found in the UIA tree.", hwnd)
         return False
 
-    target = _pick_chat_input(edits, _window_client_rect(hwnd))
+    target = _pick_chat_input(
+        edits, _window_client_rect(hwnd), name_regex=name_regex)
     if target is None:
         logger.info("focus_chat_input(0x%08X): %d candidates but none "
                     "passed the chat-input heuristic.", hwnd, len(edits))

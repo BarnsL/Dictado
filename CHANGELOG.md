@@ -4,6 +4,30 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.5.6] -- 2026-05-22
+
+Cold-launch AIM paste now matches the right element in the a11y tree.
+
+### Fixed
+
+- **Per-profile `input_name_regex` removes ambiguity.** Each AIM
+  profile can now supply a regex that the chosen UIA Edit/Document
+  element's Name property must match. Without this, on landing
+  pages with multiple focusable elements (suggested-action buttons,
+  search boxes), `_pick_chat_input` could return the wrong element
+  and `wait_for_chat_input` would happily report success against a
+  bystander. Shipped regexes: ChatGPT `^Message`, Claude
+  `^(Reply to |Talk with |How can I help)`, Copilot `^(Message|Ask)`,
+  Cursor (none).
+- **`wait_for_chat_input(set_focus=True)` atomic SetFocus.** When
+  the regex matches, we call SetFocus and verify it inside the
+  same function. No race window during which Chromium can reshuffle.
+- **Cold-launch deadline 12 -> 30 s.** Observed on this hardware,
+  Electron AI app cold-start to interactive can take 20-25 s after
+  a reboot. 30 s margin handles it; warm-path latency unchanged.
+- **DEBUG-level per-poll log in `wait_for_chat_input`.** Useful
+  when adding a new profile and the heuristic isn't catching the
+  right element.
 ## [0.5.5] -- 2026-05-22
 
 Cold-launch AIM paste reliability.

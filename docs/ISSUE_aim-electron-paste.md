@@ -310,3 +310,98 @@ and on Chromium-based apps the gap is non-trivial. Going forward,
 any UIA-based focus operation against an Electron target should
 gate on `wait_for_chat_input` (or an equivalent
 ControlType-specific predicate) rather than just window presence.
+
+---
+
+## Follow-up 4: the picker was matching the wrong element + the deadline was too short + SetFocus wasn't atomic
+
+**Discovered:** 2026-05-22, after v0.5.5 / v0.6.6.dev0 still failed
+in practice. The user dictated against the AQ "New chat" landing
+page (the greeting screen with "What can Quick do?" / "Catch me up
+on what I missed today" suggested-action buttons under the chat
+input). The chat input came up empty even though the daemon log
+said `wait_for_chat_input(...): chat input appeared in 0.29s`.
+
+**Three problems found, two of which were independently fatal.**
+
+### Problem 1: deadline was way too short on a fully-cold launch
+
+The DEBUG-level per-poll log we added to `wait_for_chat_input`
+showed the truth: on a post-reboot, GPU-cache-cold AQ launch, the
+chat input element doesn't enter the UIA tree for ~24 seconds.
+Polls #1 through #64 saw only the WebContents Document; poll #65
+finally exposed the `Edit name='Ask a question...'` we were
+waiting for. Our 12 s deadline meant the wait timed out before
+the element appeared and the hook fell through to a Ctrl+L chord
+that AQ doesn't bind to focus-prompt.
+
+**Fix:** bumped the deadline from 12 s to 30 s. Warm-path latency
+is unaffected (returns in ~50 ms). Per-poll DEBUG log left in
+place so the next time someone debugs a new AIM target they can
+see the time-to-element-appearance directly.
+
+### Problem 2: the picker was promiscuous
+
+`_pick_chat_input` returned the first focusable Edit-or-Document
+it saw. On AQ's New Chat landing page that's the WebContents
+Document (always present, big, focusable). The picker considered
+it "the chat input" and our SetFocus hit the document scroll-host,
+not the actual `Ask a question...` Edit.
+
+**Fix:** profiles can now declare an `input_name_regex` that the
+chosen element's UIA `Name` property must match. AQ uses `^Ask`
+(matches "Ask a question..."). ChatGPT desktop uses `^Message`,
+Claude uses `^(Reply to |Talk with |How can I help)`. Profiles
+without a regex fall back to the legacy area + position
+heuristics. When no element matches the regex, the picker returns
+None so `wait_for_chat_input` keeps polling instead of latching
+onto a bystander.
+
+### Problem 3: SetFocus wasn't atomic with discovery
+
+The previous flow was:
+
+```
+ready = wait_for_chat_input(hwnd, ...)
+if ready:
+    ok = focus_chat_input(hwnd, ...)
+```
+
+Two separate UIA tree walks. Chromium had ~5-10 ms between them
+to re-shuffle inner focus, and frequently did. Even when both
+calls "succeeded", the SetFocus often landed on a different
+element than the one `wait_for_chat_input` had validated.
+
+**Fix:** `wait_for_chat_input(..., set_focus=True)` does the
+SetFocus + verify-loop inside the same function call against the
+exact element returned by `_pick_chat_input`'s match. One walk,
+one element, one SetFocus, one verify. The cold-launch path uses
+this mode and returns as soon as focus is verified.
+
+### Verified
+
+Smoke after killing AQ and forcing a fully cold launch:
+
+```
+launch_target('amazon-quick'): spawned ...Amazon Quick.exe
+launch_target: window appeared in 1.7 s
+[64 polls @ 0.30 s cadence: only WebContents Document present]
+poll #65: tree has 2 Edit/Document elements (2 focusable, 2 named)
+_pick_chat_input: exactly one focusable Edit; picking it without rect heuristics
+wait_for_chat_input: chat input 'Ask a question...' appeared in 24.39 s
+paste_ok: True
+```
+
+End-to-end cold-launch latency 26 s on this hardware (mostly AQ
+startup; daemon overhead <0.5 s). Warm-path unchanged.
+
+### Lesson
+
+When automating any UI that's animating / loading / reshuffling
+focus, **atomic operations beat composed operations** even when
+the "compose" looks tighter on paper. Two function calls against
+two tree-walks in close succession give the UI thread a window to
+move things around between calls. Same lesson the foreground-lock
+docs hint at. Wrap discovery + the action that depends on the
+discovery into one entry point that holds the result long enough
+to act on it.

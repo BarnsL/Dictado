@@ -100,6 +100,17 @@ class App:
     # and activate_target then polls locate() until the window appears.
     # Empty tuple means "we don't know how to launch this app".
     launch_paths: tuple[str, ...] = ()
+    # Optional regex (case-insensitive) the chat-input element's
+    # UIA Name property must match. Disambiguates from buttons,
+    # search boxes, suggested-action chips that share the bottom
+    # of the window. Examples:
+    #   amazon-quick:  r"^Ask a question"
+    #   chatgpt:       r"^Message ChatGPT"
+    #   claude:        r"^Reply to "
+    # When empty/None, the picker falls back to area + position
+    # heuristics only (legacy behaviour for profiles without
+    # known input names).
+    input_name_regex: str = ""
 
 
 # --- Win32 plumbing (no-op on non-Windows) ----------------------------------
@@ -325,18 +336,42 @@ if sys.platform == "win32":
                              "Ctrl+L.")
             _send_ctrl_l()
             return
+        # If the active profile supplies an input_name_regex, compile
+        # it once. Used by both the cold-launch wait and the warm-path
+        # focus_chat_input call to disambiguate the chat input from
+        # other focusable Edits / Documents in the tree (suggested-
+        # action buttons, search boxes, etc.).
+        active_app = getattr(_aim_local, "active_app", None)
+        compiled_rx = None
+        if active_app is not None and active_app.input_name_regex:
+            try:
+                import re as _re
+                compiled_rx = _re.compile(active_app.input_name_regex,
+                                          _re.IGNORECASE)
+            except Exception:
+                logger.exception("Bad input_name_regex %r for %r; ignoring.",
+                                 active_app.input_name_regex, active_app.id)
+                compiled_rx = None
+
         if just_launched:
             # Cold launch: Chromium hasn't rendered the chat input yet;
             # poll the a11y tree until it does. 12 s deadline matches
             # the worst case observed for cold-start to interactive.
-            ready = wait_for_chat_input(hwnd, deadline_s=12.0,
-                                        poll_s=0.30)
-            if not ready:
-                logger.info("Cold-launch wait timed out; trying focus_"
-                            "chat_input anyway then falling back to "
-                            "Ctrl+L.")
+            # set_focus=True does the SetFocus() atomically with the
+            # discovery so Chromium can't reshuffle inner focus between
+            # "I found the input" and "I focused the input".
+            ready = wait_for_chat_input(hwnd, deadline_s=30.0,
+                                        poll_s=0.30,
+                                        name_regex=compiled_rx,
+                                        set_focus=True)
+            if ready:
+                # SetFocus already happened inside wait_for_chat_input.
+                return
+            logger.info("Cold-launch wait timed out; trying focus_"
+                        "chat_input anyway then falling back to "
+                        "Ctrl+L.")
         try:
-            ok = focus_chat_input(hwnd, timeout_s=0.6)
+            ok = focus_chat_input(hwnd, timeout_s=0.6, name_regex=compiled_rx)
         except Exception:
             logger.exception("focus_chat_input raised on hwnd 0x%08X; "
                              "falling back to Ctrl+L.", hwnd)
@@ -382,18 +417,23 @@ if sys.platform == "win32":
     _PROFILES_RAW: list[tuple] = [
         # AI assistants ------------------------------------------------
         ("chatgpt",      "ChatGPT (desktop)",  _profile_by_image("ChatGPT.exe"),         _focus_input_via_uia,
-         (r"$LOCALAPPDATA\Programs\ChatGPT\ChatGPT.exe",)),
+         (r"$LOCALAPPDATA\Programs\ChatGPT\ChatGPT.exe",),
+         r"^Message"),
         ("claude",       "Claude (desktop)",   _profile_by_image("Claude.exe"),          _focus_input_via_uia,
          (r"$LOCALAPPDATA\AnthropicClaude\Claude.exe",
-          r"$LOCALAPPDATA\Programs\Claude\Claude.exe")),
-        ("copilot",      "Microsoft Copilot",  _profile_by_image("Copilot.exe", "ai.exe"), _focus_input_via_uia, ()),
+          r"$LOCALAPPDATA\Programs\Claude\Claude.exe"),
+         r"^(Reply to |Talk with |How can I help)"),
+        ("copilot",      "Microsoft Copilot",  _profile_by_image("Copilot.exe", "ai.exe"), _focus_input_via_uia, (),
+         r"^(Message|Ask)"),
         ("amazon-quick", "Amazon Quick",       _profile_by_image("Amazon Quick.exe"),    _focus_input_via_uia,
          (r"$PROGRAMFILES\Amazon Quick\Amazon Quick.exe",
           r"$LOCALAPPDATA\Programs\Amazon Quick\Amazon Quick.exe",
-          r"$APPDATA\Microsoft\Windows\Start Menu\Programs\Amazon Quick.lnk")),
+          r"$APPDATA\Microsoft\Windows\Start Menu\Programs\Amazon Quick.lnk"),
+         r"^Ask"),
         # IDEs / editors ----------------------------------------------
         ("cursor",       "Cursor",             _profile_by_image("Cursor.exe"),          _focus_input_via_uia,
-         (r"$LOCALAPPDATA\Programs\Cursor\Cursor.exe",)),
+         (r"$LOCALAPPDATA\Programs\Cursor\Cursor.exe",),
+         r""),
         ("vscode",       "Visual Studio Code", _profile_by_image("Code.exe")),
         ("vscode_insiders", "VS Code Insiders",_profile_by_image("Code - Insiders.exe")),
         ("kiro",         "Kiro",               _profile_by_image("Kiro.exe")),
@@ -416,10 +456,11 @@ if sys.platform == "win32":
         ("notion",       "Notion",             _profile_by_image("Notion.exe")),
     ]
 
-    # Build the App list. _PROFILES_RAW rows can be 3, 4, or 5 long:
+    # Build the App list. _PROFILES_RAW rows can be 3, 4, 5, or 6 long:
     #   (id, label, profile_triple)
     #   (id, label, profile_triple, post_activate)
     #   (id, label, profile_triple, post_activate, launch_paths)
+    #   (id, label, profile_triple, post_activate, launch_paths, input_name_regex)
     APP_PROFILES: list[App] = []
     for _row in _PROFILES_RAW:
         _pid    = _row[0]
@@ -427,6 +468,7 @@ if sys.platform == "win32":
         _d, _a, _l = _row[2]
         _post   = _row[3] if len(_row) > 3 else None
         _launch = _row[4] if len(_row) > 4 else ()
+        _name_rx = _row[5] if len(_row) > 5 else ""
         APP_PROFILES.append(App(
             id=_pid,
             label=_label,
@@ -435,6 +477,7 @@ if sys.platform == "win32":
             locate=_l,
             post_activate=_post,
             launch_paths=_launch,
+            input_name_regex=_name_rx,
         ))
 
 
@@ -614,6 +657,7 @@ if sys.platform == "win32":
                 # render the chat input.
                 _aim_local.hwnd = hwnd
                 _aim_local.just_launched = just_launched
+                _aim_local.active_app = app
                 try:
                     app.post_activate()
                 except Exception:
@@ -622,6 +666,7 @@ if sys.platform == "win32":
                 finally:
                     _aim_local.hwnd = 0
                     _aim_local.just_launched = False
+                    _aim_local.active_app = None
                 # If the cold-launch path waited several seconds for
                 # the UIA tree to populate, foreground may have
                 # drifted (splash screen handoff often resets it).
