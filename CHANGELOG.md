@@ -4,6 +4,24 @@ This file tracks Dictado release notes. Format:
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning: [SemVer](https://semver.org/).
 
+## [0.5.5] -- 2026-05-22
+
+Cold-launch AIM paste reliability.
+
+### Fixed
+
+- **Auto-launching an Electron AI app now waits for its chat input
+  to render before pasting.** Previously, `activate_target`
+  followed `launch_target` immediately with `_focus_input_via_uia`,
+  which walked the UIA tree before Chromium had finished rendering
+  the WebContents. The chat input wasn't yet in the tree, the UIA
+  picker fell back to the giant Document, and the Ctrl+V chord
+  landed on whatever element Chromium had focused for its splash.
+  Fix: new `platform.uia.wait_for_chat_input(hwnd, deadline_s)`
+  polls the a11y tree at 300 ms cadence until a focusable Edit
+  matching the chat-input heuristic appears (up to 12 s). The
+  `_focus_input_via_uia` hook uses it whenever `activate_target`
+  signals the cold-launch path via a thread-local flag.
 ## [0.5.4] -- 2026-05-22
 
 AIM auto-launch + paste-reliability followups.

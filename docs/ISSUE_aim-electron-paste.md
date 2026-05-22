@@ -242,3 +242,71 @@ to 8 s and hands the resulting HWND back to the focus dance.
 
 Today's profiles with launch hints: ChatGPT desktop, Claude desktop,
 Cursor. Adding a new app is one tuple addition in `_PROFILES_RAW`.
+
+---
+
+## Follow-up 3: cold-launch race -- UIA tree wasn't ready yet
+
+**Discovered:** 2026-05-22, after v0.5.4 / v0.6.5.dev0 went out.
+The auto-launch path successfully spawned the target app and waited
+for its OS window to appear (~1.6 s for AQ on this hardware). But
+the UIA SetFocus immediately afterwards landed on the splash screen,
+not the chat input -- because Chromium hadn't yet rendered the chat
+input element into its accessibility tree.
+
+**Symptom (verbatim from log):**
+
+```
+[INFO] activate_target('amazon-quick'): no live window; attempting auto-launch.
+[INFO] launch_target('amazon-quick'): spawned C:\Program Files\Amazon Quick\Amazon Quick.exe
+[INFO] launch_target('amazon-quick'): window appeared in 1.6s
+[INFO] Rating: ... -- rated 10/10        ; rating popup fires later, AQ chat input still empty
+```
+
+The daemon thinks everything succeeded; the user sees an empty AQ
+chat input and dictates again.
+
+**Root cause:** The OS window appearing is a strict prerequisite
+for, but not sufficient for, "this app is ready to receive input".
+For Electron / Chromium apps, the window appears very early in the
+load sequence, but the prompt input doesn't exist in the
+accessibility tree until Chromium finishes paint. Empirically the
+gap is 100-300 ms on a warm GPU cache and up to 2-3 s on a cold
+start.
+
+`_focus_input_via_uia` walked the UIA tree right after window
+appeared, found only the giant Document (the WebContents scroll
+host, which is always there), picked it as a fallback, and called
+SetFocus. The Ctrl+V chord then arrived at the splash content,
+which silently swallowed it.
+
+**Fix shipped in v0.5.5 / v0.6.6.dev0:** new helper
+`platform.uia.wait_for_chat_input(hwnd, deadline_s, poll_s)`.
+Polls the UIA tree at 300 ms cadence and returns True the moment a
+focusable Edit matching the chat-input heuristic shows up.
+`activate_target` records `just_launched=True` on the thread-local
+when `launch_target` actually spawned the app; `_focus_input_via_uia`
+reads it and runs `wait_for_chat_input` first. Default deadline is
+12 s, sized to comfortably exceed AQ cold-start on this hardware.
+
+After the wait, foreground often drifts (splash-screen handoff),
+so we re-assert it via a quick `focus_window(hwnd, timeout_s=0.5)`
+before returning. That keeps `paste_into_window`'s
+`already_focused` shortcut valid.
+
+**Verified end-to-end:**
+
+```
+launch_target('amazon-quick'): spawned [...]Amazon Quick.exe
+launch_target('amazon-quick'): window appeared in 1.6s
+wait_for_chat_input(0x...): chat input appeared in 0.18s
+hwnd = 0x... (took 2.30s end-to-end)
+paste_ok: True
+```
+
+**Lesson logged:** the previous fix verified "window appears" then
+trusted UIA. UIA-readiness is a separate gate from window-readiness,
+and on Chromium-based apps the gap is non-trivial. Going forward,
+any UIA-based focus operation against an Electron target should
+gate on `wait_for_chat_input` (or an equivalent
+ControlType-specific predicate) rather than just window presence.

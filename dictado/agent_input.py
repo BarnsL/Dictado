@@ -291,6 +291,11 @@ if sys.platform == "win32":
 
     import threading as _threading
     _aim_local = _threading.local()
+    # _aim_local also carries `just_launched: bool`. activate_target
+    # sets it True when launch_target had to spawn the app (cold start
+    # path); the post_activate hook reads it to decide between waiting
+    # for the chat input to appear (cold) or proceeding immediately
+    # (warm).
 
 
     def _focus_input_via_uia() -> None:
@@ -298,19 +303,38 @@ if sys.platform == "win32":
         the HWND set by activate_target. Falls back to _send_ctrl_l
         if UIA can't find the input -- some apps still respond to the
         chord even when their accessibility tree doesn't expose the
-        input cleanly."""
+        input cleanly.
+
+        If activate_target signalled `just_launched=True` via the
+        thread-local (cold launch path), we first poll the UIA tree
+        until the chat input element actually appears in it, up to
+        12 s. Without this wait, the Chromium WebContents is still
+        rendering the splash / handoff screen and the synthesized
+        Ctrl+V we're about to fire lands on whatever placeholder
+        element happens to be focused."""
         hwnd = getattr(_aim_local, "hwnd", 0)
+        just_launched = getattr(_aim_local, "just_launched", False)
         if not hwnd:
             logger.debug("_focus_input_via_uia: no hwnd in thread-local; "
                          "skipping.")
             return
         try:
-            from dictado.platform.uia import focus_chat_input
+            from dictado.platform.uia import focus_chat_input, wait_for_chat_input
         except Exception:
             logger.exception("UIA helper unavailable; falling back to "
                              "Ctrl+L.")
             _send_ctrl_l()
             return
+        if just_launched:
+            # Cold launch: Chromium hasn't rendered the chat input yet;
+            # poll the a11y tree until it does. 12 s deadline matches
+            # the worst case observed for cold-start to interactive.
+            ready = wait_for_chat_input(hwnd, deadline_s=12.0,
+                                        poll_s=0.30)
+            if not ready:
+                logger.info("Cold-launch wait timed out; trying focus_"
+                            "chat_input anyway then falling back to "
+                            "Ctrl+L.")
         try:
             ok = focus_chat_input(hwnd, timeout_s=0.6)
         except Exception:
@@ -551,12 +575,15 @@ if sys.platform == "win32":
         except Exception:
             logger.exception("locate() raised for %r.", app_id)
             return 0
+        just_launched = False
         if not hwnd:
             # Try to launch the app, then re-locate.
             if app.launch_paths:
                 logger.info("activate_target(%r): no live window; "
                             "attempting auto-launch.", app_id)
                 hwnd = launch_target(app_id)
+                if hwnd:
+                    just_launched = True
             if not hwnd:
                 logger.info("activate_target(%r): no live window found "
                             "and auto-launch failed or unavailable.", app_id)
@@ -581,11 +608,12 @@ if sys.platform == "win32":
             return 0
         if focus_window(hwnd, timeout_s=timeout_s):
             if app.post_activate is not None:
-                # Share the target HWND with the hook via thread-local
-                # so the UIA path knows which window to walk. Cleared
-                # afterwards so a stale hwnd can't leak between AIM
-                # invocations.
+                # Share the target HWND + cold-launch flag with the
+                # hook via thread-local so the UIA path knows which
+                # window to walk and whether to wait for Chromium to
+                # render the chat input.
                 _aim_local.hwnd = hwnd
+                _aim_local.just_launched = just_launched
                 try:
                     app.post_activate()
                 except Exception:
@@ -593,6 +621,14 @@ if sys.platform == "win32":
                         "post_activate() raised for %r.", app_id)
                 finally:
                     _aim_local.hwnd = 0
+                    _aim_local.just_launched = False
+                # If the cold-launch path waited several seconds for
+                # the UIA tree to populate, foreground may have
+                # drifted (splash screen handoff often resets it).
+                # Re-assert focus so paste_into_window's
+                # already_focused check still passes.
+                if just_launched:
+                    focus_window(hwnd, timeout_s=0.5)
                 time.sleep(0.12)
             return hwnd
         logger.warning("activate_target(%r): focus_window did not transfer "

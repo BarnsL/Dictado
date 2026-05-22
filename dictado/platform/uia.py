@@ -337,6 +337,54 @@ def list_edits(hwnd: int) -> list[dict]:
     ]
 
 
+def wait_for_chat_input(hwnd: int, *,
+                        deadline_s: float = 8.0,
+                        poll_s: float = 0.25) -> bool:
+    """Block until the target window's UIA tree exposes a plausible
+    chat input (focusable Edit picked by `_pick_chat_input`), or until
+    `deadline_s` elapses. Returns True if found.
+
+    Used during the cold-launch path. When `launch_target` just
+    spawned the app, the OS window typically appears within ~2 s
+    but Chromium's accessibility tree still has placeholder content
+    for several more seconds; the chat input element doesn't yet
+    exist in the tree, so an immediate `focus_chat_input` would
+    either fail or pick the giant Document fallback. Polling is the
+    right primitive: it costs ~30-100 ms per UIA tree walk on this
+    hardware, so a 0.25 s cadence amounts to barely any CPU and
+    converges within a few hundred ms once Chromium finishes
+    paint.
+    """
+    if not hwnd:
+        return False
+    try:
+        uia, _mod = _ensure_uia()
+    except Exception:
+        logger.exception("UIA bootstrap failed; cannot wait for input.")
+        return False
+
+    deadline = time.monotonic() + max(0.5, deadline_s)
+    while time.monotonic() < deadline:
+        try:
+            root = uia.ElementFromHandle(hwnd)
+        except Exception:
+            root = None
+        if root is not None:
+            walker = uia.RawViewWalker
+            edits: list[_UiaEdit] = []
+            _walk_for_edits(uia, walker, root, edits)
+            if edits and _pick_chat_input(edits, _window_client_rect(hwnd)):
+                logger.info("wait_for_chat_input(0x%08X): chat input "
+                            "appeared in %.2fs",
+                            hwnd, deadline_s - (deadline - time.monotonic()))
+                return True
+        time.sleep(poll_s)
+
+    logger.warning("wait_for_chat_input(0x%08X): no chat-input candidate "
+                   "appeared within %.1fs.", hwnd, deadline_s)
+    return False
+
+
 def focus_chat_input(hwnd: int, *,
                      timeout_s: float = _DEFAULT_TIMEOUT_S) -> bool:
     """Move keyboard focus to the chat input under HWND. Returns True
