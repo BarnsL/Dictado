@@ -463,7 +463,8 @@ def wait_for_chat_input(hwnd: int, *,
     return False
 
 
-def _click_window_chat_zone(hwnd: int) -> bool:
+def _click_window_chat_zone(hwnd: int,
+                            y_frac: "float | None" = None) -> bool:
     """Click at where Chromium AI apps put their chat input: ~75-80%
     from the top, centered horizontally. Used when UIA can't find
     a real chat-input element (the WebContents Document covers the
@@ -473,6 +474,12 @@ def _click_window_chat_zone(hwnd: int) -> bool:
     Empirically true for: Quick AI, ChatGPT desktop, Claude desktop,
     Cursor, Copilot, Perplexity desktop. The chat input sits about
     one input-bar-height above the bottom of the window, centered.
+
+    v0.6.18: Kiro's input bar sits LOWER in the window (~92% from
+    top, only 90px from bottom), so the per-profile override
+    `chat_zone_y_frac` lets us pick a different fraction. Default
+    (when y_frac is None) stays at 0.80 which works for the
+    majority of AI desktop apps.
     """
     rect = _window_client_rect(hwnd)
     if rect is None:
@@ -481,12 +488,11 @@ def _click_window_chat_zone(hwnd: int) -> bool:
     if r <= l or b <= t:
         return False
     cx = (l + r) // 2
-    # Aim ~80% from the top -- the chat input bar's vertical center
-    # in standard layouts (the input is in the bottom ~15% of the
-    # window; 80% lands squarely in it without hitting the
-    # "Send" / "Voice" buttons on the right or the "+" attachment
-    # button on the left).
-    cy = t + int((b - t) * 0.80)
+    # Per-profile override -> default 0.80 -> clamp to safe range.
+    frac = y_frac if y_frac is not None else 0.80
+    if frac < 0.50: frac = 0.50
+    if frac > 0.98: frac = 0.98
+    cy = t + int((b - t) * frac)
     return _click_at(cx, cy)
 
 
@@ -518,6 +524,23 @@ def _click_at(cx: int, cy: int) -> bool:
         except Exception:
             pass
     return True
+
+
+def _get_active_zone_frac():
+    """Read the active AIM profile's chat_zone_y_frac override, if any.
+
+    Set by agent_input.activate_target's `_aim_local.active_app`.
+    Returns None when no profile-specific override is in effect
+    (then _click_window_chat_zone falls back to the 0.80 default).
+    """
+    try:
+        from .. import agent_input as _aim
+        active_app = getattr(_aim._aim_local, "active_app", None)
+        if active_app is None:
+            return None
+        return getattr(active_app, "chat_zone_y_frac", None)
+    except Exception:
+        return None
 
 
 def _click_element_rect(rect: tuple[int, int, int, int]) -> bool:
@@ -583,7 +606,7 @@ def focus_chat_input(hwnd: int, *,
                     "passed the chat-input heuristic.", hwnd, len(edits))
         # Last-resort: click at the window's standard chat-input zone.
         # Used when UIA enumerated zero plausible inputs at all.
-        if _click_window_chat_zone(hwnd):
+        if _click_window_chat_zone(hwnd, y_frac=_get_active_zone_frac()):
             logger.info("focus_chat_input(0x%08X): no candidates; clicked "
                         "window chat-zone as last resort.", hwnd)
             return True
@@ -617,7 +640,7 @@ def focus_chat_input(hwnd: int, *,
                     "(rect=%s, ctype=%d); UIA SetFocus would no-op. "
                     "Clicking window chat-zone directly.",
                     hwnd, target.rect, target.control_type)
-        if _click_window_chat_zone(hwnd):
+        if _click_window_chat_zone(hwnd, y_frac=_get_active_zone_frac()):
             return True
         return False
 

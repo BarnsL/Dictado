@@ -112,6 +112,15 @@ class App:
     # known input names).
     input_name_regex: str = ""
 
+    # v0.6.18: optional per-profile chat-zone Y fraction. When set,
+    # the geometric click fallback in platform.uia._click_window_chat_zone
+    # uses this fraction (0.0 = top, 1.0 = bottom) instead of the
+    # 0.80 default. Use to compensate for apps whose input bar sits
+    # lower in the window than the typical Electron chat layout.
+    # E.g. Kiro's input bar is in the bottom ~10% of the window;
+    # the default 0.80 misses it. Override to 0.92 to land cleanly.
+    chat_zone_y_frac: float | None = None
+
 
 # --- Win32 plumbing (no-op on non-Windows) ----------------------------------
 if sys.platform == "win32":
@@ -448,7 +457,11 @@ if sys.platform == "win32":
          _focus_input_via_uia,
          (r"$LOCALAPPDATA\Programs\Kiro\Kiro.exe",
           r"$APPDATA\Microsoft\Windows\Start Menu\Programs\Kiro\Kiro.lnk"),
-         r""),
+         r"",
+         # v0.6.18: Kiro's input bar is in the bottom ~10% of the
+         # window; the default 0.80 chat-zone click misses by 234px
+         # in a 1168px-tall window. 0.92 lands at the input bar.
+         0.92),
         ("zed",          "Zed",                _profile_by_image("Zed.exe")),
         ("neovide",      "Neovide",            _profile_by_image("neovide.exe")),
         ("idea",         "JetBrains IDE",      _profile_by_image("idea64.exe", "pycharm64.exe", "webstorm64.exe", "rider64.exe", "clion64.exe")),
@@ -481,6 +494,7 @@ if sys.platform == "win32":
         _post   = _row[3] if len(_row) > 3 else None
         _launch = _row[4] if len(_row) > 4 else ()
         _name_rx = _row[5] if len(_row) > 5 else ""
+        _zone   = _row[6] if len(_row) > 6 else None
         APP_PROFILES.append(App(
             id=_pid,
             label=_label,
@@ -490,6 +504,7 @@ if sys.platform == "win32":
             post_activate=_post,
             launch_paths=_launch,
             input_name_regex=_name_rx,
+            chat_zone_y_frac=_zone,
         ))
 
 
