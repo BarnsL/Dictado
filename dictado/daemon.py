@@ -253,8 +253,13 @@ def _update_tray_icon(color: str) -> None:
         icon.icon = _create_icon_image(color)
 
 
-def _play_wake_sound() -> None:
+def _play_wake_sound(started_event: "threading.Event | None" = None) -> None:
     """Play the configured wake-startup sound.
+
+    If `started_event` is provided, it's set the moment audible
+    playback has started (winsound returns immediately; the WMF/PS
+    path returns once $p.Play() has been called and the subprocess
+    has flushed an acknowledgment to stdout).
 
     Honours config keys:
       - wake_sound_path: absolute path to a .wav / .m4a / .mp3 file.
@@ -262,11 +267,15 @@ def _play_wake_sound() -> None:
       - wake_sound_volume: 0.0 - 1.0 (only honoured for the WMF
         path; winsound has no per-call volume control).
 
-    Runs synchronously on the calling thread; the file must be short
-    (< 1 s recommended) or the user perceives a delay before the
-    record stream opens. Wraps everything in try/except so a missing
-    or corrupted file never crashes start_recording.
+    Wraps everything in try/except so a missing or corrupted file
+    never crashes start_recording. If the cue can't be played at
+    all, the started_event is STILL set on exit so the caller's
+    wait doesn't deadlock; the lead_s sleep then runs unmodified.
     """
+    def _signal():
+        if started_event is not None:
+            try: started_event.set()
+            except Exception: pass
     try:
         cfg = _cfg.load()
     except Exception:
@@ -299,6 +308,7 @@ def _play_wake_sound() -> None:
             # doesn't get clobbered (rare with our 1-shot calls).
             import winsound
             winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            _signal()  # winsound returns immediately when playback starts
             return
         if sys.platform == "win32":
             # Non-WAV (m4a / mp3 / aac / ogg / flac): hand off to
@@ -363,16 +373,48 @@ def _play_wake_sound() -> None:
                 f"  [Math]::Min(8000, [int]$p.NaturalDuration.TimeSpan.TotalMilliseconds + 200)"
                 f"}} else {{ 3000 }};"
                 f"$p.Play();"
+                # v0.6.14: print + flush 'PLAYING' so the Python side
+                # knows audible playback has started. The daemon
+                # waits on a threading.Event that gets set when
+                # the reader thread sees this line. Without this
+                # signal, the lead-in sleep would race PS+WMF
+                # cold-start and the popup could appear before the
+                # cue is audible.
+                f"[Console]::Out.WriteLine('PLAYING');"
+                f"[Console]::Out.Flush();"
                 f"try {{ Start-Sleep -Milliseconds $ms }}"
                 f"finally {{ $p.Stop(); $p.Close() }}"
             )
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 ["powershell", "-NoProfile", "-NonInteractive",
                  "-Command", ps_cmd],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                bufsize=1,
+                text=True,
             )
+            # Reader thread: wait for the 'PLAYING' line, then signal
+            # and stop reading. The PS process keeps running for the
+            # full duration of the cue.
+            def _wait_for_playing():
+                try:
+                    if proc.stdout is not None:
+                        for line in proc.stdout:
+                            if "PLAYING" in line:
+                                _signal()
+                                # Drain remaining output to keep the
+                                # pipe from filling.
+                                for _ in proc.stdout:
+                                    pass
+                                return
+                except Exception:
+                    pass
+                # If we never saw the line, signal anyway after a
+                # short timeout so the caller doesn't deadlock.
+                _signal()
+            threading.Thread(target=_wait_for_playing, daemon=True,
+                             name="wake-cue-reader").start()
             return
         # macOS: use afplay (always available).
         if sys.platform == "darwin":
@@ -397,6 +439,12 @@ def _play_wake_sound() -> None:
             logger.info("No paplay/aplay found; skipping wake sound.")
     except Exception:
         logger.exception("wake-sound playback raised; skipping.")
+        _signal()  # don't deadlock the caller on errors
+        return
+    # If we got here without taking a return path (macOS / Linux
+    # branches return inside their handlers), signal anyway so the
+    # caller proceeds.
+    _signal()
 
 
 # ─── Live popup window (tkinter) ──────────────────────────────────────────────
@@ -606,8 +654,13 @@ def start_recording() -> None:
             lead_s = float(cfg_now.get("wake_sound_lead_s", 1.0))
         except Exception:
             lead_s = 1.0
-        threading.Thread(target=_play_wake_sound, daemon=True,
-                         name="wake-cue").start()
+        # v0.6.14: wait for the cue to be AUDIBLE before sleeping
+        # the lead-in. PS+WMF cold start can otherwise push the
+        # audible cue past the popup-appears moment.
+        cue_started = threading.Event()
+        threading.Thread(target=_play_wake_sound, args=(cue_started,),
+                         daemon=True, name="wake-cue").start()
+        cue_started.wait(timeout=2.0)
         if lead_s > 0:
             time.sleep(min(5.0, max(0.0, lead_s)))
 
