@@ -233,6 +233,13 @@ _BIBOO = (
     # 'baby + boo' -- Whisper hears the soft 'i' as the diphthong
     # 'eɪ', so 'biboo' -> 'baby boo' (observed live 2026-05-21).
     r"baby[\s\-]*b(?:oo|ou|u|o)|"
+    # 'baby' alone, when tiny.en truncates the trailing 'boo' on a
+    # short wake-window. Only match when the wake-prefix has already
+    # constrained us (build_default_wake_regex requires the prefix).
+    # Bare 'baby' is too generic for the permissive path; we limit
+    # it via the trailing tolerance which still expects punctuation
+    # / EOS / 4 chars max after.
+    r"baby|"
     # 'beep' -- Whisper truncates 'biboo' to 'beep' when the trailing
     # 'oo' is quiet or short. Important: only match 'beep' when it's
     # the WHOLE name token; we don't want to consume 'beeper' or
@@ -275,16 +282,69 @@ DEFAULT_NAMES: list[tuple[str, str]] = [
     ("biboo", _BIBOO),
 ]
 
+_BIBOO_PERMISSIVE = (
+    r"(?:"
+    # Distinctive phonetic renderings of 'biboo' that aren't common
+    # English words. These are safe for the bare-name (no-prefix)
+    # second-chance match path.
+    r"biboo|bibou|bibu|bibo|"
+    r"beefoo|beefou|beefu|"
+    r"beef[\s\-]*(?:oo|ou|u)|"
+    r"bee[\s\-]*foo|"
+    r"bee[\s\-]*b(?:oo|ou)|"             # 'bee boo', 'bee bou' (with -oo/-ou tail)
+    r"baby[\s\-]*b(?:oo|ou|u|o)|"        # 'baby boo' specifically (NOT bare 'baby')
+    r"piboo|pibu|pibou|"
+    r"peeboo|peabo|peabu|"
+    r"bebu|beboo|"
+    r"yobu|"
+    r"pe[\s\-]*boo|pb[\s\-]*oo"
+    r")"
+)
+
+_BIJOU_PERMISSIVE = (
+    r"(?:"
+    # Distinctive phonetic renderings of 'bijou' that aren't common
+    # English words. 'bayou' / 'biggio' could be common in some
+    # contexts (Astros fans, Louisiana mentions), but they're
+    # specific enough proper nouns that the false-positive risk is
+    # acceptable for the permissive path.
+    r"bijou|bijoux|beejoo|bee[\s\-]*joo|be[\s\-]*jew|beejew|"
+    r"bizu|bidu|biggio|bigeo|biju|"
+    r"bee[\s\-]*zhou|bay[\s\-]*zhou|"
+    r"bijoo|bigjoo|bigjew|"
+    r"vee[\s\-]*joo|vijou"
+    r")"
+)
+
+# Names eligible for the bare-name (no wake-prefix) match. Subset
+# of DEFAULT_NAMES that excludes generic English words like 'baby'
+# and 'beep' that need the wake-prefix to disambiguate from common
+# speech.
+PERMISSIVE_NAMES: list[tuple[str, str]] = [
+    ("bijou", _BIJOU_PERMISSIVE),
+    ("biboo", _BIBOO_PERMISSIVE),
+]
+
 
 def build_default_wake_regex() -> "re.Pattern[str]":
     """Compile the default wake-phrase regex used when the user doesn't
-    override `wake_word_phrases` in config."""
+    override `wake_word_phrases` in config.
+
+    v0.6.13.dev16: trailing-noise tolerance. tiny.en often hallucinates
+    1-3 trailing chars after the name ("beepers" instead of "beep",
+    "biboox" instead of "biboo"). The closing `\b` would otherwise
+    reject those. We allow up to 4 trailing word chars between the
+    name match and the boundary. False-positive risk stays low because
+    the wake-prefix already constrains us to greeting-style utterances.
+    """
     name_alt = "|".join(name_rx for _, name_rx in DEFAULT_NAMES)
     pattern = (
         rf"\b{_WAKE_PREFIX}"
         rf"(?:[\s,.!?\-]+|\s*)"   # optional separators (Whisper sometimes
                                   # elides them, sometimes inserts a comma)
-        rf"(?:{name_alt})\b"
+        rf"(?:{name_alt})"
+        rf"[a-z]{{0,4}}\b"        # tolerate up to 4 trailing chars
+                                  # (handles "beepers", "biboox", etc.)
     )
     return re.compile(pattern, re.IGNORECASE)
 
@@ -302,8 +362,12 @@ def build_permissive_name_regex() -> "re.Pattern[str]":
     minimum RMS to avoid false positives on TV / video-call audio
     that contains "biboo"-shaped phonemes.
     """
-    name_alt = "|".join(name_rx for _, name_rx in DEFAULT_NAMES)
-    pattern = rf"\b(?:{name_alt})\b"
+    # Use the PERMISSIVE_NAMES subset that excludes generic English
+    # words (e.g. bare 'baby' and 'beep') so common speech like
+    # 'baby steps' or 'love beep' doesn't false-positive on this
+    # second-chance path.
+    name_alt = "|".join(name_rx for _, name_rx in PERMISSIVE_NAMES)
+    pattern = rf"\b(?:{name_alt})[a-z]{{0,4}}\b"
     return re.compile(pattern, re.IGNORECASE)
 
 
