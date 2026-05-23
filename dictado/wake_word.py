@@ -177,7 +177,18 @@ logger = logging.getLogger("dictado.wake_word")
 # Wake-verb prefix: any of the friendly greetings the user can use.
 # Whisper transcribes these reliably so we just list them.
 _WAKE_PREFIX = (
-    r"(?:hey|ok|okay|yo|hello|hi|greetings?|salutations?)"
+    r"(?:"
+    # Standard greeting words (the "real" prefixes the user actually
+    # says).
+    r"hey|ok|okay|yo|hello|hi|greetings?|salutations?|"
+    # tiny.en mis-hears 'Hey' as one of these on short / quiet
+    # wake utterances. Live-trace evidence in the v0.6.14.dev17
+    # commit message. Including these in the prefix list lets the
+    # regex anchor on the name-variant even when 'Hey' was lost in
+    # transcription. False-positive risk is bounded because the
+    # name match still has to be a biboo/bijou variant.
+    r"oh|ah|aw|love|um|uh|hay|aye"
+    r")"
 )
 
 # "Bijou" -- pronounced "bee-joo". Whisper has never seen this proper
