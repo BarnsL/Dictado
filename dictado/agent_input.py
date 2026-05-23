@@ -436,7 +436,19 @@ if sys.platform == "win32":
          r""),
         ("vscode",       "Visual Studio Code", _profile_by_image("Code.exe")),
         ("vscode_insiders", "VS Code Insiders",_profile_by_image("Code - Insiders.exe")),
-        ("kiro",         "Kiro",               _profile_by_image("Kiro.exe")),
+        # v0.6.17: full profile upgrade. Kiro is Electron / Chromium
+        # so its UIA tree only exposes the WebContents Document
+        # (same as Quick AI). Document-shape detection in
+        # platform.uia.focus_chat_input + the v0.6.9 geometric
+        # click at ~80% from top + centered horizontally lands in
+        # Kiro's chat input reliably without an input_name_regex.
+        # launch_paths cover the user-scoped install and the Start
+        # Menu shortcut.
+        ("kiro",         "Kiro",               _profile_by_image("Kiro.exe"),
+         _focus_input_via_uia,
+         (r"$LOCALAPPDATA\Programs\Kiro\Kiro.exe",
+          r"$APPDATA\Microsoft\Windows\Start Menu\Programs\Kiro\Kiro.lnk"),
+         r""),
         ("zed",          "Zed",                _profile_by_image("Zed.exe")),
         ("neovide",      "Neovide",            _profile_by_image("neovide.exe")),
         ("idea",         "JetBrains IDE",      _profile_by_image("idea64.exe", "pycharm64.exe", "webstorm64.exe", "rider64.exe", "clion64.exe")),
